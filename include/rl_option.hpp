@@ -1,7 +1,9 @@
-/** @file include/Option.hpp
- *  This is a re-implementation of std::optional<T> with other advanced features
- * and subsets included.
- */
+/** @file include/rl_option.hpp
+ * rl::Option<T, Ts...> is a class that covers one or more alternative types of arguments and
+ * it may or may not return the T or the Ts.... rl::Option<T> is comparable to std::optional<T> behavior.
+ * The behavior of std::variant<Ts...>, std::expected<T, E> and std::optional<T> are integrated into this library.
+ * Additionally, this library provides pattern matching support on values, enabling ADT and DOD.
+ */ 
 
 #ifndef RL_OPTION_CXX26_HPP
 #if (defined(__clang__))
