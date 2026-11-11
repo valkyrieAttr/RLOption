@@ -308,7 +308,7 @@ template <typename Qp_> union alignas(Qp_) Storage_<Qp_, true> {
     std::remove_cv_t<Qp_> value;
 
   public:
-    constexpr Storage_(void[[]]) noexcept(true) {}
+    constexpr Storage_(void) noexcept(true) {}
 
   public:
     template <typename... Args_>
@@ -322,7 +322,7 @@ template <typename Qp_> union alignas(Qp_) Storage_<Qp_, false> {
     std::remove_cv_t<Qp_> value;
 
   public:
-    constexpr Storage_(void[[]]) noexcept(true) {}
+    constexpr Storage_(void) noexcept(true) {}
 
   public:
     template <typename... Args_>
@@ -331,7 +331,7 @@ template <typename Qp_> union alignas(Qp_) Storage_<Qp_, false> {
         : value(std::forward<Args_>(args)...) {}
 
   public:
-    constexpr ~Storage_(void[[]]) noexcept(true) {}
+    constexpr ~Storage_(void) noexcept(true) {}
 };
 
 template <typename Qp_,
