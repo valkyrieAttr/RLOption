@@ -1,6 +1,5 @@
-/** @file include/Option.hpp
- *  This is a re-implementation of std::optional<T> with other advanced features
- * and subsets included.
+/** @file include/rl_option.hpp
+ *  
  */
 
 #ifndef RL_OPTION_CXX26_HPP
