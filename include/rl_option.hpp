@@ -1,5 +1,6 @@
-/** @file include/rl_option.hpp
- *  
+/** @file include/Option.hpp
+ *  This is a re-implementation of std::optional<T> with other advanced features
+ * and subsets included.
  */
 
 #ifndef RL_OPTION_CXX26_HPP
@@ -491,6 +492,8 @@ template <typename Pr_> class alignas(Pr_) Where_ {
   public:
     Pr_ pred;
 };
+
+template <typename Pr_> Where_(Pr_) -> Where_<Pr_>;
 
 template <typename Tp_> struct alignas(1) is_some_pattern_ : std::false_type {};
 
@@ -4552,6 +4555,17 @@ inline constexpr auto Wild{rl::details::Wild_{}};
 
 inline constexpr auto SomeAny{rl::details::AnySome_{}};
 
+/**
+ * @brief Fn 'Where' which constructs a plain lambda.
+ * Example:
+ *   rl::Where(pred) >>= handler
+ * signlas 'this is deliberatley a guard' more clearly than an anonymous lambda
+ * does.
+ */
+template <typename Pr_>
+constexpr auto Where(Pr_ &&pred) -> rl::details::Where_<std::decay<Pr_>> {
+    return {std::forward<Pr_>(pred)};
+}
 using rl::details::operator>>=;
 
 }; // namespace rl
