@@ -28,6 +28,7 @@
 #elif (defined(__GNUC__) || defined(__GNUG__))
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpragmas"
+#pragma GCC diagnostic ignored "-Wtemplate-body"
 #endif
 
 #define RL_OPTION_CXX26_HPP 1
@@ -2511,11 +2512,12 @@ class alignas(
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wfloat-equal"
+#endif
   private:
     template <typename Qp_>
     static constexpr auto equal_values_(void const *lhs_, void const *rhs_)
 
-#endif
+
         noexcept(noexcept(*static_cast<const Qp_ *>(lhs_) ==
                           *static_cast<const Qp_ *>(rhs_))) -> bool {
         return (*static_cast<const Qp_ *>(lhs_) ==
@@ -2530,7 +2532,7 @@ class alignas(
                                         void const *rhs_) -> bool {
         constexpr std::array<bool (*)(void const *, void const *),
                              sizeof...(Args_) + 1>
-            dispatch_{&equal_values_<Tp_>, &equal_values_<Args_>...};
+            dispatch_{ &equal_values_<Tp_>, &equal_values_<Args_>... };
 
         if (index_ == 0 || index_ > dispatch_.size()) {
             return false;
