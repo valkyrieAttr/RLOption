@@ -7,7 +7,7 @@ and the ability for a single `Option` to hold one of *several* alternative
 types (a lightweight tagged union), not just `T` or nothing.
 
 ```cpp
-#include "Option.hpp"
+#include "rl_option.hpp"
 
 rl::Option<int> count{rl::Some(3)};
 rl::Option<int> empty{rl::None};
@@ -41,6 +41,7 @@ int doubled = count.map([](int v) { return v * 2; }).unwrap_or(0); // 6
   - [Comparison & hashing](#comparison--hashing)
 - [Pattern matching with `match()`](#pattern-matching-with-match)
 - [Multiple alternatives in depth](#multiple-alternatives-in-depth)
+- [Worked example: a toy lexer](#worked-example-a-toy-lexer)
 - [Known trade-offs](#known-trade-offs)
 - [License](#license)
 
@@ -65,26 +66,21 @@ int doubled = count.map([](int v) { return v * 2; }).unwrap_or(0); // 6
 | GCC | Needs GCC 14+ for `<print>`. Also confirm your GCC's `__cplusplus` value for `-std=c++23` actually reports `202302L` — some releases report a provisional value and will trip the version guard even though most language features are present. |
 | MSVC | Untested as of this writing. |
 
-If you only need the core `Option`/`Some`/`None` functionality and want
-broader compiler support, consider making the `<print>` dependency
-optional (fallback to `fprintf`) and relaxing the version guard to check
-specific feature-test macros instead of a single `__cplusplus` floor.
-
 ## Installation
 
 Single header, no build step:
 
 ```cpp
-#include "Option.hpp"
+#include "rl_option.hpp"
 ```
 
 Everything lives under `rl::`: `rl::Option`, `rl::Some`, `rl::None`,
-`rl::Default`, `rl::Wild`, `rl::SomeAny`.
+`rl::Default`, `rl::Wild`, `rl::SomeAny`, `rl::Where`.
 
 ## Quick start
 
 ```cpp
-#include "Option.hpp"
+#include "rl_option.hpp"
 #include <string>
 
 rl::Option<std::string> find_user(int id) {
@@ -123,6 +119,11 @@ int main() {
   `or_else`) only ever operate on the primary type. `Args...` are
   additional alternatives the `Option` can hold for tagged-union /
   pattern-matching purposes — see [Multiple alternatives](#multiple-alternatives-in-depth).
+- **`match()` is the flagship API.** Everything else (`is_some<T>()`,
+  `unwrap<T>()`, the pointer views) gives you one fact or one value at a
+  time. `match()` is the only tool that dispatches on *which* alternative
+  is active and hands you a correctly-typed value for each — see
+  [Pattern matching](#pattern-matching-with-match) below.
 
 ## `rl::Some<T>`
 
@@ -293,8 +294,14 @@ compile error by design, not an oversight).
 
 ## Pattern matching with `match()`
 
-Arms are built with `operator>>=`, binding a pattern to a handler, and
-passed as a variadic argument list to `match()`:
+`match()` is where this library earns its keep over `std::optional` — it's
+not a convenience wrapper around `if (is_some())`, it's a real pattern
+match with first-match-wins dispatch, flexible handlers, and several
+distinct kinds of pattern. This section documents the *whole* thing: every
+pattern kind, exactly how a match is resolved at runtime, and the one
+genuinely sharp edge in the current design.
+
+### How a match is actually resolved
 
 ```cpp
 int result = opt.match(
@@ -304,42 +311,99 @@ int result = opt.match(
 );
 ```
 
-This is deliberately the richest part of the API — there are several
-distinct ways to "pattern check" depending on what you need:
+Each `pattern >>= handler` expression (`operator>>=`) produces an *arm*.
+`match()` builds the arm list once, then does exactly this, in order,
+every time it's called:
 
-| Pattern | Matches when... | Handler receives |
-|---|---|---|
-| `rl::None` | `Option` is disengaged. | nothing — must be callable with no arguments. |
-| `rl::Wild` | **anything** — `None` or any `Some`. Universal catch-all. | nothing — must be callable with no arguments (it has to work for the `None` case too). |
-| `rl::SomeAny` | any engaged value, of any alternative type. | the matched value, forwarded as-is (`auto&`/`auto&&` lambda). |
-| `rl::Some(value)` | the primary type is active **and** equals `value` (`operator==`). | nothing, or the matched value — both are accepted. |
-| `rl::Some<AltType>(value)` | the alternative `AltType` is active **and** equals `value`. | nothing, or the matched value. |
-| `rl::Default` | the active value equals a default-constructed instance of its type. | nothing, or the matched value. |
-| a raw predicate, e.g. `[](const Alt& v){ return cond; }` | the active alternative's type matches the lambda's parameter type **and** the predicate returns `true`. | the matched value (this is how you write "any value of a *specific* alternative type, with a condition"). |
+1. Walk the arms **in the order you wrote them**. For each one, ask "does
+   this arm's pattern accept the `Option`'s *current* active type and
+   value?" The first arm that says yes wins — its handler is called with
+   the matched value (or no value — see arity below) and its result is
+   returned immediately. Nothing after it is even inspected.
+2. If **no** arm accepted, *then* it decides how to fail. It checks two
+   independent facts about your arm list: does *any* arm declare itself as
+   covering the `None` case (only `None` and `Wild` are recognized for
+   this), and does *any* arm declare itself as covering the `Some` case
+   (only `Wild`, `SomeAny`, `Some(...)`, and `Default` are recognized for
+   this — see the sharp edge below). If either is missing, it prints
+   exactly which one ("`None`", "`Some(_)`", or both) and calls
+   `std::abort()`. If both are nominally present but nothing still
+   matched (e.g. you have `Some(5)` and `Some(10)` arms and the value is
+   `7`), it prints a generic "no matching pattern arm" instead.
 
-A few important details that are easy to miss:
+The important consequence: **step 1 is what actually determines success
+or failure.** Step 2 only runs when step 1 already failed, and only
+decides *which error message* to print. This matters for the sharp edge
+below.
 
-- **Handlers are flexible on arity.** For value-bearing patterns
-  (`Some(...)`, `SomeAny`, predicates), the handler can take the matched
-  value, take nothing, *or* just be a plain value to return directly —
-  e.g. `rl::Some(0) >>= -1` is valid and just returns `-1` without a
-  lambda at all.
-- **`match()` must be exhaustive.** Internally, each arm is checked
-  against "does some arm cover `None`?" and "does some arm cover `Some`?".
-  `None`/`Wild` arms count toward the first, `Wild`/`SomeAny`/`Some(...)`
-  arms count toward the second. If neither side is covered, `match()`
-  prints which case is missing and calls `std::abort()` — this is a
-  **runtime** check, not a compile error, so missing an arm won't fail
-  the build, it'll fail the first time that branch is actually hit.
-- **A raw predicate arm does not, by itself, satisfy exhaustiveness** —
-  even if its condition would cover every real case at runtime, the
-  exhaustiveness bookkeeping only recognizes `None`/`Wild`/`SomeAny`/
-  `Some(...)`/`Default`. Always pair predicate arms with an explicit
-  catch-all (`rl::Wild`, or separate `None`/`SomeAny` arms) rather than
-  relying on the predicate alone.
-- Arms are tried in the order you pass them, and the first one whose
-  pattern accepts the current state wins — put more specific patterns
-  before `Wild`/`SomeAny`.
+### The full pattern vocabulary
+
+| Pattern | Matches when... | Handler receives | Counts as "covers None"? | Counts as "covers Some"? |
+|---|---|---|---|---|
+| `rl::None` | `Option` is disengaged. | nothing — must be callable with no arguments. | ✅ | ❌ |
+| `rl::Wild` | **anything** — `None` or any `Some`. Universal catch-all. | nothing — must be callable with no arguments (it has to work for the `None` case too). | ✅ | ✅ |
+| `rl::SomeAny` | any engaged value, of any alternative type. | the matched value, forwarded as-is (`auto&`/`auto&&` lambda). | ❌ | ✅ |
+| `rl::Some(value)` | the primary type is active **and** equals `value` (`operator==`). | nothing, or the matched value — both are accepted. | ❌ | ✅ |
+| `rl::Some<AltType>(value)` | the alternative `AltType` is active **and** equals `value`. | nothing, or the matched value. | ❌ | ✅ |
+| `rl::Default` | the active value equals a default-constructed instance of its type. | nothing, or the matched value. | ❌ | ✅ |
+| `rl::Where(pred)` | the active alternative's type matches `pred`'s parameter type **and** `pred(value)` returns `true`. | the matched value. | ❌ | ❌ (see below) |
+| a raw predicate, e.g. `[](const Alt& v){ return cond; }` | identical behavior to `Where(...)` — `Where` is just the named, self-documenting spelling of the same mechanism. | the matched value. | ❌ | ❌ (see below) |
+
+`Where(pred)` is a thin wrapper (`rl::details::Where_<Pred>`) that marks a
+callable as a deliberate guard pattern rather than relying on it being
+*implicitly* treated as one. It behaves exactly like passing the bare
+lambda — use whichever reads better at the call site; `Where(...)` is
+kept as backward compatibility when you want the arm list to visually signal "this is a
+guard" at a glance, especially next to `Some(...)`/`SomeAny` arms.
+
+### Handler arity is flexible
+
+For any value-bearing pattern (`Some(...)`, `SomeAny`, `Where(...)`/raw
+predicates), the handler can:
+
+```cpp
+rl::Some(0) >>= [](int v)      { return v; };     // takes the value
+rl::Some(0) >>= []             { return -1; };     // takes nothing
+rl::Some(0) >>= -1;                                  // not even a lambda —
+                                                      // a literal return value
+```
+
+`None` and `Wild` are the exception: their handlers **must** be nullary,
+since `Wild` has to work uniformly for the `None` case too.
+
+### The sharp edge: `Where`/predicate arms don't move the "covers Some" needle
+
+This is the one piece of behavior that's easy to get wrong, so it's worth
+stating plainly: **the "covers None" / "covers Some" bookkeeping only
+recognizes a pattern's *kind*, not what it actually matches.** A `Where`
+arm (or an equivalent raw-lambda arm) is never counted as covering `Some`,
+*even if its predicate is unconditionally `true` and genuinely covers
+every value of its type*.
+
+The good news, from how resolution actually works (see above): this
+**does not** make a logically-complete set of `Where(...)` arms unsafe. If
+your predicates jointly cover every alternative your `Option` can hold,
+step 1 will always find a match, and step 2 (where the bookkeeping lives)
+never runs at all. What it *does* affect is diagnostic quality: if your
+coverage has a real gap and that gap is ever hit, and the only arms you
+had were `Where`/predicate arms, `match()` reports the generic "no
+matching pattern arm" (or, if you also skipped a `None` arm, "missing arm
+for: `None`") rather than anything more specific — because as far as the
+bookkeeping is concerned, nothing ever claimed to cover `Some` at all.
+
+Practical takeaway: it's fine, and shown below, to build your "one arm
+per alternative type" dispatch entirely out of `Where(...)` arms — just
+make sure they're jointly exhaustive over your actual alternative set
+(one guard per type in `Option<T, Args...>`), and keep a `None` arm (or
+`Wild`) in the list so the `None` side of the bookkeeping is satisfied
+too.
+
+### Ordering matters
+
+Arms are tried top to bottom, and the **first** accepting arm wins — put
+more specific patterns before broader ones (`Some(specific_value)` before
+`SomeAny`, a `Where(...)` guard for one type before a trailing `SomeAny`
+catch-all for "everything else").
 
 ## Multiple alternatives in depth
 
@@ -354,18 +418,140 @@ value.is_some<std::string>();   // true
 value.is_some<int>();           // false
 
 value.match(
-    rl::Some(0)                           >>= [] { return "zero"; },
-    [](const std::string &) { return true; } >>= [](const std::string &s) {
-      return s.c_str();
-    },
-    rl::SomeAny                            >>= [](auto &) { return "other"; },
-    rl::None                                >>= [] { return "none"; }
+    rl::Some(0)   >>= [] { return "zero"; },
+    rl::Where([](const std::string &) { return true; }) >>=
+        [](const std::string &s) { return s.c_str(); },
+    rl::SomeAny    >>= [](auto &) { return "other"; },
+    rl::None        >>= [] { return "none"; }
 );
 ```
 
 If `T` isn't default-constructible but one of `Args...` is, `rl::Default`
 transparently falls back to constructing that alternative — see
 [`rl::Default`](#rldefault).
+
+For `N` alternatives, the natural style is **one `Where(...)` arm per
+alternative type**, each written exactly once regardless of how many
+alternatives `N` is, plus a trailing `None` arm. The worked example below
+builds a small lexer around exactly this shape with `N = 3`.
+
+## Worked example: a toy lexer
+
+This is the shape this library was built for: a result type that can be
+"one of several token kinds, or nothing left to read," matched exhaustively
+at every call site. Three alternative types plus `None` for end-of-input —
+`N = 3`, same pattern scales to however many token kinds a real lexer needs.
+
+```cpp
+#include "rl_option.hpp"
+#include <cctype>
+#include <print>
+#include <string>
+#include <string_view>
+
+struct Identifier { std::string name; };
+struct NumberLit   { double value; };
+struct Symbol       { char ch; };
+
+using Token = rl::Option<Identifier, NumberLit, Symbol>;
+
+Token next_token(std::string_view &src) {
+  while (!src.empty() &&
+         std::isspace(static_cast<unsigned char>(src.front()))) {
+    src.remove_prefix(1);
+  }
+
+  if (src.empty()) {
+    return rl::None; // end of input
+  }
+
+  const char c = src.front();
+
+  if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+    std::size_t len = 0;
+    while (len < src.size() && (std::isalnum(static_cast<unsigned char>(
+                                     src[len])) ||
+                                 src[len] == '_')) {
+      ++len;
+    }
+    std::string name{src.substr(0, len)};
+    src.remove_prefix(len);
+    return rl::Some(Identifier{std::move(name)});
+  }
+
+  if (std::isdigit(static_cast<unsigned char>(c))) {
+    std::size_t len = 0;
+    while (len < src.size() &&
+           std::isdigit(static_cast<unsigned char>(src[len]))) {
+      ++len;
+    }
+    double value = std::stod(std::string{src.substr(0, len)});
+    src.remove_prefix(len);
+    return rl::Some(NumberLit{value});
+  }
+
+  src.remove_prefix(1);
+  return rl::Some(Symbol{c});
+}
+
+int main() {
+  std::string_view source = "x1 + 42 y";
+
+  for (;;) {
+    Token tok = next_token(source);
+
+    const bool keep_going = tok.match(
+        // exact-value match on one specific alternative
+        rl::Some<Symbol>(Symbol{'+'}) >>= [] {
+          std::println("plus");
+          return true;
+        },
+
+        // one Where(...) guard per remaining alternative type — this is
+        // the "N alternatives" idiom: it reads the same whether N is 3
+        // or 30, and each guard only ever fires for its own type.
+        [](const Identifier &) { return true; } >>=
+            [](const Identifier &id) {
+              std::println("identifier: {}", id.name);
+              return true;
+            },
+
+        [](const NumberLit &) { return true; } >>=
+            [](const NumberLit &num) {
+              std::println("number: {}", num.value);
+              return true;
+            },
+
+        // catches any Symbol other than '+' that slipped past the
+        // exact-value arm above — placed after it on purpose, since
+        // SomeAny would otherwise swallow the '+' case first.
+        rl::SomeAny >>= [](auto &&) {
+          std::println("other symbol");
+          return true;
+        },
+
+        rl::None >>= [] {
+          std::println("<eof>");
+          return false;
+        });
+
+    if (!keep_going) {
+      break;
+    }
+  }
+}
+```
+
+Running this over `"x1 + 42 y"` prints, in order: `identifier: x1`,
+`plus`, `number: 42`, `identifier: y`, `<eof>`. Every arm but the last
+reports `true` to keep the loop going; `None` reports `false` to stop it —
+a simple example of letting `match()`'s return value drive control flow
+instead of branching on `is_some()` yourself.
+
+This example hasn't been run through a conformant C++26 toolchain as part
+of writing this README (see [Compiler support](#compiler-support)) — treat
+it as a design reference and verify it against your own build before
+relying on it.
 
 ## Known trade-offs
 
