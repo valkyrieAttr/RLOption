@@ -50,7 +50,6 @@
 #include <memory>
 #include <print>
 #include <ranges>
-#include <span>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -77,16 +76,6 @@
 #define RL_IS_SUBVIEW_OR_SUBSTR subview
 #elif (__cplusplus >= 202302L)
 #define RL_IS_SUBVIEW_OR_SUBSTR substr
-#endif
-
-#if (__has_cpp_attribute(clang::always_inline))
-#define RL_ALWAYS_INLINE clang::always_inline
-#elif (__has_cpp_attribute(gnu::always_inline))
-#define RL_ALWAYS_INLINE gnu::always_inline
-#elif (__has_cpp_attribute(msvc::forceinline))
-#define RL_ALWAYS_INLINE msvc::forceinline
-#else
-#define RL_ALWAYS_INLINE
 #endif
 
 namespace rl {
@@ -553,12 +542,7 @@ constexpr auto operator>>=(Pp_ &&pattern_, Fp_ &&handler_)
 }
 
 template <typename From_, typename To_>
-using ForwardLike_t = std::conditional_t<
-    std::is_rvalue_reference_v<From_ &&>,
-    std::conditional_t<std::is_const_v<std::remove_reference_t<From_>>,
-                       const To_ &&, To_ &&>,
-    std::conditional_t<std::is_const_v<std::remove_reference_t<From_>>,
-                       const To_ &, To_ &>>;
+using ForwardLike_t = decltype(std::forward_like<From_>(std::declval<To_ &>()));
 
 template <typename Pp_, typename Tp_>
 constexpr auto pattern_matches_type_(void) noexcept(true) -> bool {
@@ -613,357 +597,212 @@ constexpr auto pattern_matches_type_(void) noexcept(true) -> bool {
     }
 }
 
-template <typename Rp_, typename Self_, typename... Types_>
-class alignas(void const *) ArmMulti_ {
-  private:
-    using AcceptFn_ = bool (*)(void const *, std::size_t, void const *);
+// `match()` keeps the original Arm_ objects and dispatches directly over
+// their types. No arm table, erased callback, or runtime arm loop is built.
+template <typename Pp_>
+inline constexpr bool covers_none_slot_ =
+    std::same_as<std::remove_cvref_t<Pp_>, Opt::None> ||
+    std::same_as<std::remove_cvref_t<Pp_>, details::Wild_>;
 
-  private:
-    using CallFn_ = Rp_ (*)(void *, std::size_t, void *);
+template <typename Arm_>
+consteval auto match_arm_covers_none_(void) -> bool {
+    using ArmD_ = std::remove_cvref_t<Arm_>;
+    if constexpr (requires {
+                      typename ArmD_::pattern_type;
+                      typename ArmD_::handler_type;
+                  }) {
+        return covers_none_slot_<typename ArmD_::pattern_type>;
+    } else {
+        return false;
+    }
+}
 
-  private:
-    static constexpr std::size_t _pad_len_{
-        (alignof(void const *) - ((sizeof(bool) * 3) % alignof(void const *))) %
-        alignof(void const *)};
+template <typename Arm_, typename Tp_>
+consteval auto match_arm_matches_type_(void) -> bool {
+    using ArmD_ = std::remove_cvref_t<Arm_>;
+    if constexpr (requires {
+                      typename ArmD_::pattern_type;
+                      typename ArmD_::handler_type;
+                  }) {
+        return pattern_matches_type_<typename ArmD_::pattern_type, Tp_>();
+    } else {
+        return false;
+    }
+}
 
-  private:
-    template <typename From_, typename To_>
-    using ForwardLike_t = details::ForwardLike_t<From_, To_>;
+template <typename Tp_, typename Arms_>
+struct match_type_covered_;
 
-  private:
-    template <typename Pp_, typename Tp_>
-    static constexpr auto pattern_matches_type_(void) noexcept(true) -> bool {
-        return details::pattern_matches_type_<Pp_, Tp_>();
+template <typename Tp_, typename... Arms_>
+struct match_type_covered_<Tp_, std::tuple<Arms_...>>
+    : std::bool_constant<(match_arm_matches_type_<Arms_, Tp_>() || ...)> {};
+
+template <typename Types_, typename Arms_>
+struct match_all_types_covered_;
+
+template <typename... Types_, typename... Arms_>
+struct match_all_types_covered_<std::tuple<Types_...>, std::tuple<Arms_...>>
+    : std::bool_constant<
+          (match_type_covered_<Types_, std::tuple<Arms_...>>::value && ...)> {};
+
+template <typename Pp_, typename Tp_>
+constexpr auto matches_value_(const Pp_ &pat_, const Tp_ &value_) -> bool {
+    using Pd_ = std::remove_cvref_t<Pp_>;
+
+    if constexpr (std::same_as<Pd_, Opt::None>) {
+        return false;
     }
 
-  private:
-    template <typename Pp_, typename Tp_>
-    static constexpr auto matches_value_(const Pp_ &pat_, const Tp_ &value_)
-        -> bool {
-        using Pd_ = std::remove_cvref_t<Pp_>;
-
-        if constexpr (std::same_as<Pd_, Opt::None>) {
+    else if constexpr (std::same_as<Pd_, Opt::Default>) {
+        if constexpr (std::is_default_constructible_v<Tp_> &&
+                      std::equality_comparable<Tp_>) {
+            const Tp_ def_{};
+            return value_ == def_;
+        } else {
             return false;
         }
+    }
 
-        else if constexpr (std::same_as<Pd_, Opt::Default>) {
-            if constexpr (std::is_default_constructible_v<Tp_> &&
-                          std::equality_comparable<Tp_>) {
-                const Tp_ def_{};
-                return value_ == def_;
-            }
+    else if constexpr (std::same_as<Pd_, details::Wild_> ||
+                       std::same_as<Pd_, details::AnySome_>) {
+        return true;
+    }
 
-            else {
-                return false;
-            }
-        }
-
-        else if constexpr (std::same_as<Pd_, details::Wild_> ||
-                           std::same_as<Pd_, details::AnySome_>) {
-            return true;
-        }
-
-        else if constexpr (is_some_pattern_<Pd_>::value) {
-            if constexpr (std::same_as<Tp_,
-                                       typename is_some_pattern_<Pd_>::type> &&
-                          std::equality_comparable<Tp_>) {
+    else if constexpr (is_some_pattern_<Pd_>::value) {
+        if constexpr (std::same_as<Tp_, typename is_some_pattern_<Pd_>::type> &&
+                      std::equality_comparable<Tp_>) {
 // Intentional: pattern matching uses equality comparison including for floats.
-// This mirrors std::optional behaviour.
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wfloat-equal"
 #endif
-                return value_ == pat_.get();
+            return value_ == pat_.get();
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
-            }
-
-            else {
-                return false;
-            }
-        }
-
-        else if constexpr (requires(const Pd_ &p_, const Tp_ &v_) {
-                               typename Pd_::where_tag_;
-                               { p_.pred(v_) } -> std::convertible_to<bool>;
-                           }) {
-            return static_cast<bool>(pat_.pred(value_));
-        }
-
-        else if constexpr (requires(const Pd_ &p_, const Tp_ &v_) {
-                               { p_(v_) } -> std::convertible_to<bool>;
-                           }) {
-            return static_cast<bool>(pat_(value_));
-        }
-
-        else if constexpr (!std::same_as<Pd_, bool> && requires(const Pd_ &p_) {
-                               { p_() } -> std::convertible_to<bool>;
-                           }) {
-            return static_cast<bool>(pat_());
-        }
-
-        else if constexpr (std::same_as<Pd_, bool> &&
-                           !std::same_as<Tp_, bool>) {
-            return pat_;
-        }
-
-        else {
-            return value_ == pat_;
+        } else {
+            return false;
         }
     }
 
-  private:
-    template <typename Pp_, typename Tp_>
-    static constexpr auto accept_for_(void const *pat_, void const *value_)
-        -> bool {
-        return (value_ != nullptr &&
-                matches_value_(*static_cast<const Pp_ *>(pat_),
-                               *static_cast<const Tp_ *>(value_)));
+    else if constexpr (requires(const Pd_ &p_, const Tp_ &v_) {
+                           typename Pd_::where_tag_;
+                           { p_.pred(v_) } -> std::convertible_to<bool>;
+                       }) {
+        return static_cast<bool>(pat_.pred(value_));
     }
 
-  private:
-    template <typename Fp_, typename Tp_>
-    static constexpr auto can_call_type_(void) -> bool {
-        using Vp_ = ForwardLike_t<Self_, Tp_>;
-
-        return (
-            std::is_invocable_r_v<Rp_, Fp_ &, Vp_> ||
-            (std::is_void_v<Rp_> && std::is_invocable_v<Fp_ &, Vp_>) ||
-            std::is_invocable_r_v<Rp_, Fp_ &> ||
-            (std::is_void_v<Rp_> && std::is_invocable_v<Fp_ &>) ||
-            (!std::is_void_v<Rp_> && (std::is_convertible_v<Fp_ &, Rp_> ||
-                                      std::is_constructible_v<Rp_, Fp_ &>)));
+    else if constexpr (requires(const Pd_ &p_, const Tp_ &v_) {
+                           { p_(v_) } -> std::convertible_to<bool>;
+                       }) {
+        return static_cast<bool>(pat_(value_));
     }
 
-  private:
-    template <typename Fp_, typename Tp_>
-    static constexpr auto call_for_(void *fn_, void *value_) -> Rp_ {
-        using Vp_ = ForwardLike_t<Self_, Tp_>;
-        using Obj_ = std::remove_reference_t<Vp_>;
+    else if constexpr (!std::same_as<Pd_, bool> && requires(const Pd_ &p_) {
+                           { p_() } -> std::convertible_to<bool>;
+                       }) {
+        return static_cast<bool>(pat_());
+    }
 
-        auto &handler_ = *static_cast<Fp_ *>(fn_);
-        auto &&value = static_cast<Vp_>(*static_cast<Obj_ *>(value_));
+    else if constexpr (std::same_as<Pd_, bool> && !std::same_as<Tp_, bool>) {
+        return pat_;
+    }
 
-        if constexpr (std::is_invocable_r_v<Rp_, Fp_ &, Vp_> ||
-                      (std::is_void_v<Rp_> &&
-                       std::is_invocable_v<Fp_ &, Vp_>)) {
-            return (std::invoke_r<Rp_>(handler_, static_cast<Vp_>(value)));
-        }
+    else {
+        return value_ == pat_;
+    }
+}
 
-        else if constexpr (std::is_invocable_r_v<Rp_, Fp_ &> ||
-                           (std::is_void_v<Rp_> &&
-                            std::is_invocable_v<Fp_ &>)) {
-            return std::invoke_r<Rp_>(handler_);
-        }
+template <typename Rp_, typename Hp_>
+constexpr auto invoke_none_(Hp_ &handler_) -> Rp_ {
+    static_assert(
+        std::is_invocable_r_v<Rp_, Hp_ &> ||
+            (!std::same_as<Rp_, void> &&
+             (std::convertible_to<Hp_ &, Rp_> ||
+              std::constructible_from<Rp_, Hp_ &>)),
+        "None/Wild arm handler must be callable without an argument");
 
-        else if constexpr (!std::is_void_v<Rp_> &&
-                           (std::is_convertible_v<Fp_ &, Rp_> ||
-                            std::is_constructible_v<Rp_, Fp_ &>)) {
-            return static_cast<Rp_>(handler_);
-        }
+    if constexpr (std::is_invocable_r_v<Rp_, Hp_ &>) {
+        return std::invoke_r<Rp_>(handler_);
+    } else {
+        return static_cast<Rp_>(handler_);
+    }
+}
 
-        else {
+template <typename Rp_, typename Hp_, typename Value_>
+constexpr auto invoke_some_(Hp_ &handler_, Value_ &&value_) -> Rp_ {
+    static_assert(
+        std::is_invocable_r_v<Rp_, Hp_ &, Value_> ||
+            std::is_invocable_r_v<Rp_, Hp_ &> ||
+            (!std::same_as<Rp_, void> &&
+             (std::convertible_to<Hp_ &, Rp_> ||
+              std::constructible_from<Rp_, Hp_ &>)),
+        "match() arm handler cannot accept the matched alternative");
+
+    if constexpr (std::is_invocable_r_v<Rp_, Hp_ &, Value_>) {
+        return std::invoke_r<Rp_>(handler_, std::forward<Value_>(value_));
+    } else if constexpr (std::is_invocable_r_v<Rp_, Hp_ &>) {
+        return std::invoke_r<Rp_>(handler_);
+    } else {
+        return static_cast<Rp_>(handler_);
+    }
+}
+
+template <typename Rp_, typename FirstArm_, typename... RestArms_>
+constexpr auto match_none_(FirstArm_ &arm_, RestArms_ &...rest_) -> Rp_ {
+    using ArmD_ = std::remove_cvref_t<FirstArm_>;
+
+    if constexpr (requires {
+                      typename ArmD_::pattern_type;
+                      typename ArmD_::handler_type;
+                  }) {
+        using Pattern_ = typename ArmD_::pattern_type;
+        if constexpr (covers_none_slot_<Pattern_>) {
+            return invoke_none_<Rp_>(arm_.handler);
+        } else if constexpr (sizeof...(RestArms_) > 0) {
+            return match_none_<Rp_>(rest_...);
+        } else {
             std::unreachable();
         }
-    }
-
-  private:
-    template <typename Fp_> static constexpr auto call_none_(void *fn_) -> Rp_ {
-        auto &handler_ = *static_cast<Fp_ *>(fn_);
-
-        if constexpr (std::is_invocable_r_v<Rp_, Fp_ &> ||
-                      (std::is_void_v<Rp_> && std::is_invocable_v<Fp_ &>)) {
-            return std::invoke_r<Rp_>(handler_);
-        }
-
-        else if constexpr (!std::is_void_v<Rp_> &&
-                           (std::is_convertible_v<Fp_ &, Rp_> ||
-                            std::is_constructible_v<Rp_, Fp_ &>)) {
-            return static_cast<Rp_>(handler_);
-        }
-
-        else {
-            std::unreachable();
-        }
-    }
-
-  private:
-    template <typename OpTp_, typename... OpArgs_> friend class Opt::Option;
-
-  private:
-    bool present_{false};
-
-  private:
-    bool matches_none_{false};
-
-  private:
-    bool matches_some_{false};
-
-  private:
-    [[no_unique_address]] details::Pad_<_pad_len_> _pad{};
-
-  private:
-    void const *pat_{nullptr};
-
-  private:
-    void *fn_{nullptr};
-
-  private:
-    bool (*accept_)(void const *, std::size_t, void const *){nullptr};
-
-  private:
-    Rp_ (*call_)(void *, std::size_t, void *){nullptr};
-
-  private:
-    template <typename Pd_, typename First_, typename... Rest_>
-    static constexpr auto accept_chain_(std::size_t index_, void const *pat_,
-                                        void const *value_) -> bool {
-        if constexpr (pattern_matches_type_<Pd_, First_>()) {
-            if (index_ == 1) {
-                return accept_for_<Pd_, First_>(pat_, value_);
-            }
-        }
-
-        if constexpr (sizeof...(Rest_) > 0) {
-            return (accept_chain_<Pd_, Rest_...>(index_ - 1, pat_, value_));
-        }
-
-        return false;
-    }
-
-  private:
-    template <typename Fd_, typename First_, typename... Rest_>
-    static constexpr auto call_chain_(std::size_t index_, void *fn_,
-                                      void *value_) -> Rp_ {
-        if (index_ == 1) {
-            return call_for_<Fd_, First_>(fn_, value_);
-        }
-
-        if constexpr (sizeof...(Rest_) > 0) {
-            return (call_chain_<Fd_, Rest_...>(index_ - 1, fn_, value_));
-        }
-
+    } else if constexpr (sizeof...(RestArms_) > 0) {
+        return match_none_<Rp_>(rest_...);
+    } else {
         std::unreachable();
     }
+}
 
-  public:
-    constexpr ArmMulti_(void) = default;
+template <typename Rp_, typename CurrentType_, typename Value_,
+          typename FirstArm_, typename... RestArms_>
+constexpr auto match_some_(std::string_view type_name_, Value_ &&value_,
+                           FirstArm_ &arm_, RestArms_ &...rest_) -> Rp_ {
+    using ArmD_ = std::remove_cvref_t<FirstArm_>;
 
-  private:
-    template <typename Pp_, typename Fp_>
-    constexpr auto init_arm_(void) -> void {
-        using Pd_ = std::remove_cvref_t<Pp_>;
-        using Fd_ = std::remove_reference_t<Fp_>;
+    if constexpr (requires {
+                      typename ArmD_::pattern_type;
+                      typename ArmD_::handler_type;
+                  }) {
+        using Pattern_ = typename ArmD_::pattern_type;
+        using Handler_ = typename ArmD_::handler_type;
 
-        static_assert(((!pattern_matches_type_<Pd_, Types_>() ||
-                        can_call_type_<Fd_, Types_>()) &&
-                       ...),
-                      "match_unwrapped() arm handler cannot accept a matched "
-                      "alternative");
-
-        static_assert(
-            (!std::same_as<Pd_, Opt::None> &&
-             !std::same_as<Pd_, details::Wild_>) ||
-                std::is_invocable_r_v<Rp_, Fd_ &> ||
-                (std::is_void_v<Rp_> && std::is_invocable_v<Fd_ &>) ||
-                (!std::is_void_v<Rp_> && (std::is_convertible_v<Fd_ &, Rp_> ||
-                                          std::is_constructible_v<Rp_, Fd_ &>)),
-            "match_unwrapped() None arm handler must be callable "
-            "without an argument");
-
-        this->accept_ = [](void const *pat, std::size_t index,
-                           void const *value) -> bool {
-            if (index == 0) {
-                return (std::same_as<Pd_, Opt::None> ||
-                        std::same_as<Pd_, details::Wild_>);
+        if constexpr (pattern_matches_type_<Pattern_, CurrentType_>()) {
+            if (matches_value_(arm_.pattern,
+                               static_cast<const CurrentType_ &>(value_))) {
+                return invoke_some_<Rp_, Handler_, Value_>(
+                    arm_.handler, std::forward<Value_>(value_));
             }
-
-            if (index > sizeof...(Types_)) {
-                return false;
-            }
-
-            return (accept_chain_<Pd_, Types_...>(index, pat, value));
-        };
-
-        this->call_ = [](void *fn, std::size_t index, void *value) -> Rp_ {
-            if (index == 0) {
-                return call_none_<Fd_>(fn);
-            }
-
-            if (index > sizeof...(Types_)) {
-                std::unreachable();
-            }
-
-            return (call_chain_<Fd_, Types_...>(index, fn, value));
-        };
+        }
     }
 
-  public:
-    template <typename ArmType_>
-    constexpr ArmMulti_(ArmType_ &&arm [[RL_LIFETIME_BOUND]]) noexcept(true)
-        requires(requires {
-                    arm.pattern;
-                    arm.handler;
-                })
-        : present_{true},
-          matches_none_{
-              std::same_as<typename std::remove_cvref_t<ArmType_>::pattern_type,
-                           Opt::None> ||
-              std::same_as<typename std::remove_cvref_t<ArmType_>::pattern_type,
-                           details::Wild_>},
-          matches_some_{
-              std::same_as<typename std::remove_cvref_t<ArmType_>::pattern_type,
-                           details::Wild_> ||
-              std::same_as<typename std::remove_cvref_t<ArmType_>::pattern_type,
-                           details::AnySome_>},
-          pat_{std::addressof(arm.pattern)},
-          fn_{const_cast<void *>(
-              static_cast<void const *>(std::addressof(arm.handler)))} {
-        using Pp_ = typename std::remove_cvref_t<ArmType_>::pattern_type;
-        using Fp_ = typename std::remove_cvref_t<ArmType_>::handler_type;
-        this->template init_arm_<Pp_, Fp_>();
+    if constexpr (sizeof...(RestArms_) > 0) {
+        return match_some_<Rp_, CurrentType_, Value_>(
+            type_name_, std::forward<Value_>(value_), rest_...);
+    } else {
+        std::println(stderr,
+                     "Option<{}>::match() failed - no matching pattern arm",
+                     type_name_);
+        std::abort();
     }
-
-    // Catch-all constructor for AnySome_ (no .pattern / .handler
-    // members). AnySome_ is a sentinel meaning "any Some value
-    // regardless of type"; we store fn_ as a pointer to the
-    // AnySome_ value itself, which acts as the callable (operator()
-    // with any value).
-  public:
-    template <typename ArmType_>
-    constexpr ArmMulti_(ArmType_ &&arm [[RL_LIFETIME_BOUND]]) noexcept(true)
-        requires(std::same_as<std::remove_cvref_t<ArmType_>, details::AnySome_>)
-        : present_{true}, matches_none_{false}, matches_some_{true},
-          pat_{nullptr}, fn_{const_cast<void *>(
-                             static_cast<void const *>(std::addressof(arm)))} {
-        // accept_: match any active Some alternative
-        this->accept_ = [](void const * /*pat*/, std::size_t index,
-                           void const * /*value*/
-                           ) -> bool {
-            // AnySome_ matches any Some (index > 0)
-            return index > 0;
-        };
-
-        // call_: invoke the AnySome_ as a callable with no value
-        // arg
-        this->call_ = [](void *fn, std::size_t /*index*/, void * /*value*/
-                         ) -> Rp_ {
-            auto &handler_ = *static_cast<std::remove_cvref_t<ArmType_> *>(fn);
-            if constexpr (std::is_invocable_r_v<Rp_, decltype(handler_)>) {
-                return static_cast<Rp_>(handler_());
-            } else if constexpr (std::is_void_v<Rp_> &&
-                                 std::is_invocable_v<decltype(handler_)>) {
-                handler_();
-            } else {
-                std::unreachable();
-            }
-        };
-    }
-
-  private:
-    template <typename Tp_, typename... Args_> friend class Option;
-};
+}
 
 // Layer 3: copy assignment
 template <typename Qp_, bool = (std::is_trivially_copy_assignable_v<Qp_> &&
@@ -2428,19 +2267,7 @@ class alignas(
 
   private:
     template <typename From_, typename To_>
-    using ForwardLike_t = std::conditional_t<
-        std::is_rvalue_reference_v<From_ &&>,
-        std::conditional_t<std::is_const_v<std::remove_reference_t<From_>>,
-                           const To_ &&, To_ &&>,
-        std::conditional_t<std::is_const_v<std::remove_reference_t<From_>>,
-                           const To_ &, To_ &>>;
-
-  private:
-    template <typename Rp_, typename Self_>
-    using ArmFor_ = details::ArmMulti_<Rp_, Self_, Tp_, Args_...>;
-
-  private:
-    template <typename Ap_> using ArmSpan_ = std::span<const Ap_>;
+    using ForwardLike_t = details::ForwardLike_t<From_, To_>;
 
   private:
     template <typename Qp_>
@@ -3369,71 +3196,45 @@ class alignas(
                        ForwardLike_t<Self_, Args_>...>,
             Arms_...>::type;
 
-        using ArmT_ = ArmFor_<ReturnType_, Self_>;
-        const ArmT_ arm_arr_[] = {ArmT_(std::forward<Arms_>(arms))...};
-
-        return (std::forward<Self_>(self).template match_unwrapped<ReturnType_>(
-            ArmSpan_<ArmT_>(arm_arr_, sizeof...(Arms_))));
-    }
-
-  private:
-    template <typename Rp_, typename Self_>
-    constexpr auto match_unwrapped
-        [[nodiscard, RL_ALWAYS_INLINE]](this Self_ &&self,
-                                        ArmSpan_<ArmFor_<Rp_, Self_>> arms)
-            -> Rp_ {
-
-        using ArmT_ = ArmFor_<Rp_, Self_>;
-
-        const bool has_none_ =
-            (std::ranges::find_if(arms, [](const ArmT_ &arm_) {
-                 return arm_.present_ && arm_.matches_none_;
-             }) != arms.end());
-
-        const bool has_some_ =
-            (std::ranges::find_if(arms, [](const ArmT_ &arm_) {
-                 return arm_.present_ && arm_.matches_some_;
-             }) != arms.end());
+        static_assert((details::match_arm_covers_none_<Arms_>() || ...),
+                      "match(): no arm covers None");
+        static_assert(
+            (details::match_arm_matches_type_<Arms_, Tp_>() || ...),
+            "match(): no arm covers the primary type");
+        static_assert(
+            details::match_all_types_covered_<
+                std::tuple<Tp_, Args_...>, std::tuple<Arms_...>>::value,
+            "match(): an alternative type has no covering arm");
 
         const std::size_t active_{self.active_index_()};
-        void *value_{const_cast<void *>(self.active_value_ptr_())};
-
-        auto indexed_arms_ = std::views::zip(
-            std::views::iota(std::size_t{0}, arms.size()), arms);
-
-        const auto matched_ = std::ranges::find_if(
-            indexed_arms_, [active_, value_](const auto &indexed_arm_) {
-                const ArmT_ &arm_ = std::get<1>(indexed_arm_);
-
-                return (arm_.present_ && arm_.accept_ != nullptr &&
-                        arm_.call_ != nullptr &&
-                        arm_.accept_(arm_.pat_, active_, value_));
-            });
-
-        if (matched_ != indexed_arms_.end()) {
-            const ArmT_ &arm_ = arms[std::get<0>(*matched_)];
-            return arm_.call_(arm_.fn_, active_, value_);
+        if (active_ == 0) {
+            return details::match_none_<ReturnType_>(arms...);
         }
 
-        if (!has_none_ || !has_some_) {
-            auto _x = ((!has_none_ && !has_some_)
-                           ? "None, Some(_)"
-                           : (!has_none_ ? "None" : "Some(_)"));
+        auto dispatch_some_ = [&]<std::size_t Index_ = 0>(auto &&dispatch_)
+            -> ReturnType_ {
+            if constexpr (Index_ < sizeof...(Args_) + 1) {
+                using CurrentType_ =
+                    std::tuple_element_t<Index_, std::tuple<Tp_, Args_...>>;
 
-            std::println(stderr,
-                         "Option<{}>::match_unwrapped() failed - "
-                         "non-exhaustive, missing arm for: {}",
-                         self.template get_type_name<Tp_>(), _x);
+                if (active_ == Index_ + 1) {
+                    using Value_ = ForwardLike_t<Self_, CurrentType_>;
+                    auto &&value_ = std::forward_like<Self_>(
+                        self.template get_<CurrentType_>());
 
-            std::abort();
-        }
+                    return details::match_some_<ReturnType_, CurrentType_,
+                                                Value_>(
+                        self.template get_type_name<Tp_>(),
+                        std::forward<Value_>(value_), arms...);
+                }
 
-        std::println(stderr,
-                     "Option<{}>::match_unwrapped() failed - "
-                     "no matching pattern arm",
-                     self.template get_type_name<Tp_>());
+                return dispatch_.template operator()<Index_ + 1>(dispatch_);
+            } else {
+                std::unreachable();
+            }
+        };
 
-        std::abort();
+        return dispatch_some_.template operator()<0>(dispatch_some_);
     }
 
   public:
