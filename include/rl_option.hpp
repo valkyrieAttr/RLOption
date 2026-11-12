@@ -45,6 +45,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -604,14 +605,28 @@ inline constexpr bool covers_none_slot_ =
     std::same_as<std::remove_cvref_t<Pp_>, Opt::None> ||
     std::same_as<std::remove_cvref_t<Pp_>, details::Wild_>;
 
-template <typename Arm_>
-consteval auto match_arm_covers_none_(void) -> bool {
+template <typename Arm_> consteval auto match_arm_covers_none_(void) -> bool {
     using ArmD_ = std::remove_cvref_t<Arm_>;
     if constexpr (requires {
                       typename ArmD_::pattern_type;
                       typename ArmD_::handler_type;
                   }) {
         return covers_none_slot_<typename ArmD_::pattern_type>;
+    } else {
+        return false;
+    }
+}
+
+template <typename Arm_>
+consteval auto match_arm_is_some_catch_all_(void) -> bool {
+    using ArmD_ = std::remove_cvref_t<Arm_>;
+    if constexpr (requires {
+                      typename ArmD_::pattern_type;
+                      typename ArmD_::handler_type;
+                  }) {
+        using Pattern_ = typename ArmD_::pattern_type;
+        return (std::same_as<Pattern_, details::Wild_> ||
+                std::same_as<Pattern_, details::AnySome_>);
     } else {
         return false;
     }
@@ -630,20 +645,18 @@ consteval auto match_arm_matches_type_(void) -> bool {
     }
 }
 
-template <typename Tp_, typename Arms_>
-struct match_type_covered_;
+template <typename Tp_, typename Arms_> struct match_type_covered_;
 
 template <typename Tp_, typename... Arms_>
 struct match_type_covered_<Tp_, std::tuple<Arms_...>>
     : std::bool_constant<(match_arm_matches_type_<Arms_, Tp_>() || ...)> {};
 
-template <typename Types_, typename Arms_>
-struct match_all_types_covered_;
+template <typename Types_, typename Arms_> struct match_all_types_covered_;
 
 template <typename... Types_, typename... Arms_>
 struct match_all_types_covered_<std::tuple<Types_...>, std::tuple<Arms_...>>
-    : std::bool_constant<
-          (match_type_covered_<Types_, std::tuple<Arms_...>>::value && ...)> {};
+    : std::bool_constant<(
+          match_type_covered_<Types_, std::tuple<Arms_...>>::value && ...)> {};
 
 template <typename Pp_, typename Tp_>
 constexpr auto matches_value_(const Pp_ &pat_, const Tp_ &value_) -> bool {
@@ -717,9 +730,8 @@ template <typename Rp_, typename Hp_>
 constexpr auto invoke_none_(Hp_ &handler_) -> Rp_ {
     static_assert(
         std::is_invocable_r_v<Rp_, Hp_ &> ||
-            (!std::same_as<Rp_, void> &&
-             (std::convertible_to<Hp_ &, Rp_> ||
-              std::constructible_from<Rp_, Hp_ &>)),
+            (!std::same_as<Rp_, void> && (std::convertible_to<Hp_ &, Rp_> ||
+                                          std::constructible_from<Rp_, Hp_ &>)),
         "None/Wild arm handler must be callable without an argument");
 
     if constexpr (std::is_invocable_r_v<Rp_, Hp_ &>) {
@@ -734,9 +746,8 @@ constexpr auto invoke_some_(Hp_ &handler_, Value_ &&value_) -> Rp_ {
     static_assert(
         std::is_invocable_r_v<Rp_, Hp_ &, Value_> ||
             std::is_invocable_r_v<Rp_, Hp_ &> ||
-            (!std::same_as<Rp_, void> &&
-             (std::convertible_to<Hp_ &, Rp_> ||
-              std::constructible_from<Rp_, Hp_ &>)),
+            (!std::same_as<Rp_, void> && (std::convertible_to<Hp_ &, Rp_> ||
+                                          std::constructible_from<Rp_, Hp_ &>)),
         "match() arm handler cannot accept the matched alternative");
 
     if constexpr (std::is_invocable_r_v<Rp_, Hp_ &, Value_>) {
@@ -777,30 +788,36 @@ constexpr auto match_some_(std::string_view type_name_, Value_ &&value_,
                            FirstArm_ &arm_, RestArms_ &...rest_) -> Rp_ {
     using ArmD_ = std::remove_cvref_t<FirstArm_>;
 
-    if constexpr (requires {
-                      typename ArmD_::pattern_type;
-                      typename ArmD_::handler_type;
-                  }) {
-        using Pattern_ = typename ArmD_::pattern_type;
+    if constexpr (match_arm_is_some_catch_all_<FirstArm_>()) {
         using Handler_ = typename ArmD_::handler_type;
+        return invoke_some_<Rp_, Handler_, Value_>(
+            arm_.handler, std::forward<Value_>(value_));
+    } else {
+        if constexpr (requires {
+                          typename ArmD_::pattern_type;
+                          typename ArmD_::handler_type;
+                      }) {
+            using Pattern_ = typename ArmD_::pattern_type;
+            using Handler_ = typename ArmD_::handler_type;
 
-        if constexpr (pattern_matches_type_<Pattern_, CurrentType_>()) {
-            if (matches_value_(arm_.pattern,
-                               static_cast<const CurrentType_ &>(value_))) {
-                return invoke_some_<Rp_, Handler_, Value_>(
-                    arm_.handler, std::forward<Value_>(value_));
+            if constexpr (pattern_matches_type_<Pattern_, CurrentType_>()) {
+                if (matches_value_(arm_.pattern,
+                                   static_cast<const CurrentType_ &>(value_))) {
+                    return invoke_some_<Rp_, Handler_, Value_>(
+                        arm_.handler, std::forward<Value_>(value_));
+                }
             }
         }
-    }
 
-    if constexpr (sizeof...(RestArms_) > 0) {
-        return match_some_<Rp_, CurrentType_, Value_>(
-            type_name_, std::forward<Value_>(value_), rest_...);
-    } else {
-        std::println(stderr,
-                     "Option<{}>::match() failed - no matching pattern arm",
-                     type_name_);
-        std::abort();
+        if constexpr (sizeof...(RestArms_) > 0) {
+            return match_some_<Rp_, CurrentType_, Value_>(
+                type_name_, std::forward<Value_>(value_), rest_...);
+        } else {
+            std::println(stderr,
+                         "Option<{}>::match() failed - no matching pattern arm",
+                         type_name_);
+            std::abort();
+        }
     }
 }
 
@@ -1711,11 +1728,29 @@ class alignas(
         if constexpr (std::same_as<std::remove_cv_t<Qp_>,
                                    std::remove_cv_t<First_>>) {
             std::destroy_at(std::addressof(alternative_.first_));
-        }
-
-        else {
+        } else {
             destroy_alternative_<Qp_>(alternative_.rest_);
         }
+
+        // Every recursively selected `rest_` is itself a live union object.
+        // End its lifetime after its active child has been destroyed.
+        std::destroy_at(std::addressof(alternative_));
+    }
+
+  private:
+    // A leaf constructor can throw after the recursive union wrappers have
+    // been started, but before the leaf's lifetime begins. Roll back just the
+    // wrappers; there is no live leaf object to destroy on this path.
+    template <typename Qp_, typename First_, typename... Rest_>
+    static constexpr auto destroy_partial_alternative_(
+        details::Alternative_<First_, Rest_...> &alternative_) noexcept(true)
+        -> void {
+        if constexpr (!std::same_as<std::remove_cv_t<Qp_>,
+                                    std::remove_cv_t<First_>>) {
+            destroy_partial_alternative_<Qp_>(alternative_.rest_);
+        }
+
+        std::destroy_at(std::addressof(alternative_));
     }
 
   private:
@@ -1733,13 +1768,36 @@ class alignas(
         }
 
         else {
-            std::construct_at(std::addressof(this->storage.alternatives));
+            auto *alternatives_ =
+                std::construct_at(std::addressof(this->storage.alternatives));
 
+#if defined(__cpp_exceptions)
+            if constexpr (std::is_nothrow_constructible_v<std::remove_cv_t<Qp_>,
+                                                          CtorArgs_...>) {
+                auto &value_ = construct_alternative_<Qp_>(
+                    *alternatives_, std::forward<CtorArgs_>(args)...);
+
+                this->is_some.index_ = this->index_of_<Qp_>();
+                return static_cast<Qp_ &>(value_);
+            } else {
+                try {
+                    auto &value_ = construct_alternative_<Qp_>(
+                        *alternatives_, std::forward<CtorArgs_>(args)...);
+
+                    this->is_some.index_ = this->index_of_<Qp_>();
+                    return static_cast<Qp_ &>(value_);
+                } catch (...) {
+                    destroy_partial_alternative_<Qp_>(*alternatives_);
+                    throw;
+                }
+            }
+#else
             auto &value_ = construct_alternative_<Qp_>(
-                this->storage.alternatives, std::forward<CtorArgs_>(args)...);
+                *alternatives_, std::forward<CtorArgs_>(args)...);
 
             this->is_some.index_ = this->index_of_<Qp_>();
             return static_cast<Qp_ &>(value_);
+#endif
         }
     }
 
@@ -1892,6 +1950,21 @@ class alignas(
   public:
     constexpr OptionStorage_(typename Opt::None) noexcept(true)
         : OptionStorage_{} {}
+
+  public:
+    template <typename Qp_, typename... CtorArgs_>
+    constexpr explicit OptionStorage_(
+        std::in_place_type_t<Qp_>,
+        CtorArgs_
+            &&...args) noexcept(std::
+                                    is_nothrow_constructible_v<
+                                        std::remove_cv_t<Qp_>, CtorArgs_...>)
+        requires((std::same_as<Qp_, Tp_> ||
+                  (std::same_as<Qp_, Args_> || ...)) &&
+                 std::is_constructible_v<std::remove_cv_t<Qp_>, CtorArgs_...>)
+        : OptionStorage_{} {
+        this->template construct_<Qp_>(std::forward<CtorArgs_>(args)...);
+    }
 
   public:
     template <typename Qp_>
@@ -2093,75 +2166,6 @@ class alignas(
     }
 
   private:
-    template <typename Qp_>
-    static constexpr auto
-    active_alternative_ptr_(OptionStorage_ &self_
-                            [[RL_LIFETIME_BOUND]]) noexcept(true) -> void * {
-        return static_cast<void *>(
-            alternative_ptr_<Qp_>(std::addressof(self_.storage.alternatives)));
-    }
-
-  private:
-    template <typename Qp_>
-    static constexpr auto
-    active_alternative_ptr_(const OptionStorage_ &self_
-                            [[RL_LIFETIME_BOUND]]) noexcept(true)
-        -> void const * {
-        return static_cast<void const *>(
-            alternative_ptr_<Qp_>(std::addressof(self_.storage.alternatives)));
-    }
-
-  private:
-    constexpr auto active_value_ptr_(void) & noexcept(true)
-        [[RL_LIFETIME_BOUND]] -> void * {
-        if (this->is_some.index_ == 0) {
-            return nullptr;
-        }
-
-        if (this->is_some.index_ == 1) {
-            return std::addressof(this->storage.value);
-        }
-
-        using Fn_ = void *(*)(OptionStorage_ &);
-
-        static constexpr std::array<Fn_, sizeof...(Args_)> dispatch_{
-            &active_alternative_ptr_<Args_>...};
-
-        return (dispatch_[static_cast<std::size_t>(this->is_some.index_ - 2)](
-            *this));
-    }
-
-// active_value_ptr_ returns nullptr when None; clang lifetime-safety cannot
-// statically verify the binding for the nullptr branch — suppress the
-// suggestion.
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlifetime-safety-intra-tu-suggestions"
-#endif
-  private:
-    constexpr auto active_value_ptr_(void) const & noexcept(true)
-        -> void const * {
-        if (this->is_some.index_ == 0) {
-            return nullptr;
-        }
-
-        if (this->is_some.index_ == 1) {
-            return std::addressof(this->storage.value);
-        }
-
-        using Fn_ = void const *(*)(const OptionStorage_ &);
-
-        static constexpr std::array<Fn_, sizeof...(Args_)> dispatch_{
-            &active_alternative_ptr_<Args_>...};
-
-        return (dispatch_[static_cast<std::size_t>(this->is_some.index_ - 2)](
-            *this));
-    }
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
-
-  private:
     constexpr auto swap_(OptionStorage_ &other_) noexcept(
         (std::is_nothrow_move_constructible_v<Tp_> &&
          (std::is_nothrow_move_constructible_v<Args_> && ...)) &&
@@ -2326,28 +2330,6 @@ class alignas(
         return this->template has_type_<Tp_>();
     }
 
-// active_value_ptr_ can return nullptr (None case); suppress false-positive
-// lifetimebound-violation — the return value is a raw pointer to storage in
-// *this when non-null, which is correct.
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlifetime-safety-lifetimebound-violation"
-#endif
-  private:
-    constexpr auto active_value_ptr_(void) & noexcept(true)
-        [[RL_LIFETIME_BOUND]] -> void * {
-        return this->data.active_value_ptr_();
-    }
-
-  private:
-    constexpr auto active_value_ptr_(void) const & noexcept(true)
-        [[RL_LIFETIME_BOUND]] -> void const * {
-        return this->data.active_value_ptr_();
-    }
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
-
 // Intentional float equality: mirroring std::optional<T>::operator==.
 // Suppress -Wfloat-equal for the noexcept specifier and the body.
 #if defined(__clang__)
@@ -2356,23 +2338,21 @@ class alignas(
 #endif
   private:
     template <typename Qp_>
-    static constexpr auto equal_values_(void const *lhs_, void const *rhs_)
-
-        noexcept(noexcept(*static_cast<const Qp_ *>(lhs_) ==
-                          *static_cast<const Qp_ *>(rhs_))) -> bool {
-        return (*static_cast<const Qp_ *>(lhs_) ==
-                *static_cast<const Qp_ *>(rhs_));
+    static constexpr auto
+    equal_values_(const Option &lhs_, const Option &rhs_) noexcept(noexcept(
+        lhs_.template get_<Qp_>() == rhs_.template get_<Qp_>())) -> bool {
+        return (lhs_.template get_<Qp_>() == rhs_.template get_<Qp_>());
     }
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
 
   private:
-    static constexpr auto equal_active_(std::size_t index_, void const *lhs_,
-                                        void const *rhs_) -> bool {
-        constexpr std::array<bool (*)(void const *, void const *),
-                             sizeof...(Args_) + 1>
-            dispatch_{&equal_values_<Tp_>, &equal_values_<Args_>...};
+    static constexpr auto equal_active_(std::size_t index_, const Option &lhs_,
+                                        const Option &rhs_) -> bool {
+        using Fn_ = bool (*)(const Option &, const Option &);
+        constexpr std::array<Fn_, sizeof...(Args_) + 1> dispatch_{
+            &equal_values_<Tp_>, &equal_values_<Args_>...};
 
         if (index_ == 0 || index_ > dispatch_.size()) {
             return false;
@@ -2457,14 +2437,13 @@ class alignas(
     template <typename Up_, typename Target_ = typename details::
                                 match_alternative_<Up_, Tp_, Args_...>::type>
     constexpr Option(Up_ &&val_) noexcept(
-        std::is_nothrow_constructible_v<Target_, Up_> &&
-        std::is_nothrow_move_constructible_v<Target_>)
+        std::is_nothrow_constructible_v<Target_, Up_>)
         requires(!details::__is_option_<Up_> &&
                  !details::is_some_pattern_<std::remove_cvref_t<Up_>>::value &&
                  !std::same_as<std::remove_cvref_t<Up_>, Opt::None> &&
                  !std::same_as<std::remove_cvref_t<Up_>, Opt::Default> &&
                  details::match_alternative_<Up_, Tp_, Args_...>::valid)
-        : data{Opt::Some<Target_>(std::forward<Up_>(val_))} {}
+        : data{std::in_place_type<Target_>, std::forward<Up_>(val_)} {}
 
   public:
     constexpr Option(const Option &)
@@ -3198,12 +3177,11 @@ class alignas(
 
         static_assert((details::match_arm_covers_none_<Arms_>() || ...),
                       "match(): no arm covers None");
+        static_assert((details::match_arm_matches_type_<Arms_, Tp_>() || ...),
+                      "match(): no arm covers the primary type");
         static_assert(
-            (details::match_arm_matches_type_<Arms_, Tp_>() || ...),
-            "match(): no arm covers the primary type");
-        static_assert(
-            details::match_all_types_covered_<
-                std::tuple<Tp_, Args_...>, std::tuple<Arms_...>>::value,
+            details::match_all_types_covered_<std::tuple<Tp_, Args_...>,
+                                              std::tuple<Arms_...>>::value,
             "match(): an alternative type has no covering arm");
 
         const std::size_t active_{self.active_index_()};
@@ -3211,8 +3189,8 @@ class alignas(
             return details::match_none_<ReturnType_>(arms...);
         }
 
-        auto dispatch_some_ = [&]<std::size_t Index_ = 0>(auto &&dispatch_)
-            -> ReturnType_ {
+        auto dispatch_some_ =
+            [&]<std::size_t Index_ = 0>(auto &&dispatch_) -> ReturnType_ {
             if constexpr (Index_ < sizeof...(Args_) + 1) {
                 using CurrentType_ =
                     std::tuple_element_t<Index_, std::tuple<Tp_, Args_...>>;
@@ -3680,8 +3658,12 @@ class alignas(
                  (std::is_move_constructible_v<Args_> && ...) &&
                  details::match_alternative_<Up_, Tp_, Args_...>::valid)
     {
+        using Target_ =
+            typename details::match_alternative_<Up_, Tp_, Args_...>::type;
+
+        Target_ replacement_(std::forward<Up_>(new_val));
         Option<Tp_, Args_...> old_ = this->take();
-        *this = std::forward<Up_>(new_val);
+        this->data.template emplace_<Target_>(std::move(replacement_));
         return old_;
     }
 
@@ -3933,8 +3915,7 @@ class alignas(
             return true;
         }
 
-        return (Option::equal_active_(lhs_index_, lhs.active_value_ptr_(),
-                                      rhs.active_value_ptr_()));
+        return Option::equal_active_(lhs_index_, lhs, rhs);
     }
 
   public:
@@ -4144,8 +4125,17 @@ class alignas(
             }
         }
 
-        this->reset();
-        this->data.template emplace_<Target_>(std::forward<Up_>(val_));
+        if constexpr (std::is_move_constructible_v<Target_>) {
+            // Construct while the old alternative is still alive. Besides
+            // improving the exception guarantee, this lets converting
+            // constructors safely read from references into the old value.
+            Target_ replacement_(std::forward<Up_>(val_));
+            this->data.template emplace_<Target_>(std::move(replacement_));
+        } else {
+            // A non-movable target cannot be staged and then transferred.
+            // Preserve direct construction support for such alternatives.
+            this->data.template emplace_<Target_>(std::forward<Up_>(val_));
+        }
         return *this;
     }
 
@@ -4381,7 +4371,7 @@ inline constexpr auto SomeAny{rl::details::AnySome_{}};
  * does.
  */
 template <typename Pr_>
-constexpr auto Where(Pr_ &&pred) -> rl::details::Where_<std::decay<Pr_>> {
+constexpr auto Where(Pr_ &&pred) -> rl::details::Where_<std::decay_t<Pr_>> {
     return {std::forward<Pr_>(pred)};
 }
 using rl::details::operator>>=;
