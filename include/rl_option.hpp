@@ -13,6 +13,7 @@
 #pragma clang diagnostic ignored "-Wunknown-warning-option"
 #pragma clang diagnostic ignored "-Wunknown-pragmas"
 #pragma clang diagnostic ignored "-Wunused-macros"
+#pragma clang diagnostic ignored "-Wreserved-identifier"
 #pragma clang diagnostic ignored "-Wc++98-compat"
 #pragma clang diagnostic ignored "-Wc++98-compat-pedantic"
 #pragma clang diagnostic ignored "-Wc++98-compat-local-type-template-args"
@@ -45,7 +46,6 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#include <exception>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -526,11 +526,43 @@ template <typename Pp_, typename Fp_> struct Arm_ {
   public:
     using handler_type = std::remove_cvref_t<Fp_>;
 
+  private:
+    static constexpr std::size_t pattern_footprint_ =
+        std::is_empty_v<pattern_type> ? std::size_t{0} : sizeof(pattern_type);
+
+  private:
+    static constexpr std::size_t mid_pad_ =
+        align_up_(pattern_footprint_, alignof(handler_type)) -
+        pattern_footprint_;
+
+  private:
+    static_assert(
+        alignof(handler_type) >= alignof(pattern_type),
+        "Arm_ assumes handler_type carries the struct's max alignment, so "
+        "the layout ends with zero implicit tail padding. A pattern_type "
+        "with stricter alignment than its handler would need a trailing "
+        "Pad_<>, but a non-zero trailing Pad_<> can't be elided by "
+        "no_unique_address (it's the last member, nothing follows it to "
+        "overlap into) and would cost a real byte instead of saving one.");
+
   public:
     [[no_unique_address]] pattern_type pattern;
 
+  public: 
+    [[no_unique_address]] Pad_<mid_pad_> _mid_pad{};
+
   public:
     handler_type handler;
+
+  public:
+    template <typename PpCtor_, typename FpCtor_>
+    constexpr Arm_(PpCtor_&& pattern_, FpCtor_&& handler_) noexcept(
+        std::is_nothrow_constructible_v<pattern_type, PpCtor_> &&
+        std::is_nothrow_constructible_v<handler_type, FpCtor_>)
+        requires(std::is_constructible_v<pattern_type, PpCtor_> &&
+                 std::is_constructible_v<handler_type, FpCtor_>)
+        : pattern(std::forward<PpCtor_>(pattern_)),
+          handler(std::forward<FpCtor_>(handler_)) {}
 };
 
 template <typename Pp_, typename Fp_> Arm_(Pp_, Fp_) -> Arm_<Pp_, Fp_>;
