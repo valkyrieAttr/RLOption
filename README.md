@@ -51,6 +51,7 @@ This document describes the API implemented by `include/rl_option.hpp`. It inten
 | `rl::Option<T>` | `None` or a `T` |
 | `rl::Option<T, E>` | `None`, a `T`, or an `E` |
 | `rl::Option<A, B, C>` | `None`, an `A`, a `B`, or a `C` |
+| `rl::Option<A, B, C, Ts...>` | `None`, an `A`, a `B`, `C` or multiple alternatives types |
 
 An instance never intentionally holds two alternatives at once. The first template parameter is the primary type. Every later parameter is a secondary alternative.
 
