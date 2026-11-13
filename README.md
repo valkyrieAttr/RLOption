@@ -6,12 +6,14 @@
 
 This document describes the API implemented by `include/rl_option.hpp`. It intentionally distinguishes implemented behavior from behavior that may be familiar from `std::optional`, `std::variant`, `std::expected`, or Rust. Those types are useful points of comparison, but `rl::Option` is not a drop-in replacement for any of them.
 
+Besides the public API, this document also describes how the header actually implements that API internally — storage layout, discriminator values, dispatch mechanisms, and exception-safety ordering. Those internal descriptions are read directly off the current revision of `include/rl_option.hpp`. They are not part of the stable public contract: §16 already warns against depending on exact layout, and that warning applies to every internals paragraph added below as much as to the ones that were already there.
+
 > **Important:** the first template argument is the *primary type*. Most optional-style accessors and combinators operate only on that type. The remaining template arguments are secondary alternatives and must be handled explicitly or through `match()`.
 
-**Header:** `include/rl_option.hpp`  
-**Namespace:** `rl`  
-**Language baseline:** C++23  
-**Dependencies:** standard library only  
+**Header:** `include/rl_option.hpp`
+**Namespace:** `rl`
+**Language baseline:** C++23
+**Dependencies:** standard library only
 **License identifier:** `GPL-3.0-or-later`
 
 ---
@@ -34,9 +36,11 @@ This document describes the API implemented by `include/rl_option.hpp`. It inten
 14. [Errors, exceptions, and failure behavior](#14-errors-exceptions-and-failure-behavior)
 15. [Constraints and edge cases](#15-constraints-and-edge-cases)
 16. [Implementation notes](#16-implementation-notes)
-17. [Complete API reference](#17-complete-api-reference)
-18. [Frequently asked questions](#18-frequently-asked-questions)
-19. [License](#19-license)
+17. [A nine-alternative walkthrough](#17-a-nine-alternative-walkthrough)
+18. [Known pitfalls and anti-patterns](#18-known-pitfalls-and-anti-patterns)
+19. [Complete API reference](#19-complete-api-reference)
+20. [Frequently asked questions](#20-frequently-asked-questions)
+21. [License](#21-license)
 
 ---
 
@@ -201,6 +205,15 @@ For a Compiler Explorer instance that has the header installed on its include pa
 If the instance is self-hosted, add the directory containing `rl_option.hpp` to the compiler's include path, for example with `-I/path/to/include`.
 
 A public Compiler Explorer session cannot resolve an arbitrary path on your own computer. In that environment, make the header available through the session's supported library mechanism or include its contents in the source being compiled. Compiler and standard-library availability varies by selected toolchain; do not assume that every listed compiler supports every C++23 library facility used here.
+
+### 2.6 Practical considerations for publishing this on Compiler Explorer
+
+Sharing a Compiler Explorer link puts the header in front of readers who did not choose, and may not know, which compiler and standard-library combination the link happens to use. A few consequences follow directly from §2.1–§2.3:
+
+- "Accepts `-std=c++23`" is necessary but not sufficient. `<print>`, `std::views::zip`, and `std::forward_like` landed in different standard-library releases on different vendors' timelines, so two compilers that both claim C++23 support can still disagree on whether this header compiles at all. Pin an exact compiler version in the shared link's description rather than a bare "any C++23 compiler" claim.
+- The reflection-vs-`__PRETTY_FUNCTION__` fork in §2.2 and §16.5 is picked per translation unit based on feature-test macros, not by anything this library controls. A reader who forks the link onto a different compiler on the same site can get differently formatted (but behaviorally identical) abort diagnostics without changing a single line of their own code. Don't build an expected-output comparison in a Compiler Explorer "diff" view around the exact text of an abort message (see §18.8).
+- Compiler Explorer's compiler list changes over time, independent of this header's own revisions. A link that worked when it was published can stop compiling months later purely because the pinned compiler version was retired from the site, with nothing in this header having changed. If the library is meant to be a long-lived reference example, periodically re-open and re-save the link rather than treating "it compiled once" as a permanent property.
+- Every example in this README was written to compile standalone with a single `#include "rl_option.hpp"`. When adapting one for a Compiler Explorer session that only has the header, not the file tree, around it, keep that property: don't let an example quietly depend on a previous example's `using` declarations or helper functions that live in an earlier, unshared snippet.
 
 ---
 
@@ -436,6 +449,8 @@ int main() {
 ```
 A predicate's being considered applicable to a type is a compile-time property. The predicate's runtime result is not proven at compile time.
 
+Internally, `Where(pred)` is nothing more than `Where_<std::decay_t<Pred>>{pred}` — a one-member struct holding the predicate plus a nested `where_tag_` type alias that the pattern-matching machinery uses to recognize it as a named guard rather than an ordinary callable pattern. A bare predicate lambda used directly as a pattern is matched the same way at runtime; the only thing `Where` adds is that `where_tag_` marker, which exists purely so the intent "this is deliberately a guard" is legible both to a reader and to the small number of `if constexpr` branches in the matcher that special-case guards.
+
 ---
 
 ## 4. Constructing and assigning values
@@ -563,6 +578,8 @@ int main() {
     value = rl::Some<long>(5);      // Explicitly select long.
 }
 ```
+Internally this bare-value assignment path does something a naive "reset, then construct" implementation would not: when the deduced target alternative is movable, it first constructs a temporary of that target type *from the assigned expression*, while whatever alternative was previously active is still alive and untouched, and only afterwards resets the old alternative and move-constructs the real storage from that temporary. See [§16.3](#163-exception-safety-during-state-changes) for why this ordering matters and what it protects against.
+
 ### 4.6 Copy and move operations
 
 Copy construction is available only when every alternative is copy-constructible. Move construction is available only when every alternative is move-constructible.
@@ -599,6 +616,8 @@ int main() {
     (void)destination;
 }
 ```
+When both sides of a copy or move *assignment* already have the same alternative active, the implementation assigns directly onto the existing object (falling back to destroy-and-reconstruct only if that alternative type isn't copy-/move-assignable) rather than always tearing down and rebuilding; when the active alternatives differ, or either side is `None`, it resets the destination and constructs the new alternative from scratch. See [§16.1](#161-storage-model) for the dispatch mechanism behind this.
+
 ---
 
 ## 5. A staged tutorial
@@ -1001,60 +1020,7 @@ int main() {
     );
 }
 ```
-### 6.6 `Wild` and `SomeAny` are not interchangeable
-
-`Wild` covers `None`; `SomeAny` does not. This affects both compile-time coverage and runtime dispatch.
-
-- Use `Wild` for a single catch-all that is responsible for both empty and engaged states.
-- Use `None` followed by `SomeAny` when the empty state has separate behavior.
-- Use `None` followed by one typed arm per alternative when each alternative needs distinct handling.
-
-### 6.7 Return types of `match()`
-
-If every handler returns `void`, `match()` returns `void`.
-
-Mixing `void` and non-`void` handlers is rejected.
-
-The header attempts to deduce an `Option`-shaped result for non-`void` dispatch. There is an important implementation limitation: the dispatcher invokes each handler with the deduced final result type as its required return type. It does not automatically wrap a raw handler result in `Some`.
-
-For the current header, write non-`void` handlers so that they return the final result type explicitly. For example:
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int> value(rl::Some(42));
-
-    auto rendered = value.match(
-        rl::None >>= [] {
-            return rl::Option<std::string>(
-                rl::Some(std::string("<empty>"))
-            );
-        },
-        rl::Wild >>= [](int number) {
-            return rl::Option<std::string>(
-                rl::Some(std::to_string(number))
-            );
-        }
-    );
-
-    std::println("{}", rendered.unwrap());
-}
-```
-Do not rely on the raw-value form below; in the supplied implementation it does not compile as an implicit `Option`-wrapping operation:
-
-```text
-// Not supported by the current dispatcher:
-// auto result = value.match(
-//     rl::None >>= [] { return 0; },
-//     rl::Wild >>= [](int number) { return number; }
-// );
-```
-
-This limitation is documented because a previous description of the API claimed automatic wrapping of heterogeneous handler results. That claim is not supported by the implementation in the supplied header.
+This alignment rule is not a lint or a style guideline — it is a hard `static_assert` inside `Arm_<Pattern, Handler>` itself, and it exists because of how `Arm_` is laid out. `Arm_` stores the pattern, just enough mid-padding to bring the handler up to its own alignment boundary, and then the handler, in that order, relying on the handler to supply the struct's overall trailing alignment. A pattern with *stricter* alignment than its handler would need padding bytes *after* the handler as well, and because the pattern is stored with `[[no_unique_address]]`, a `Pad_<>` placed after the handler would be the very last member of the class — with nothing following it to overlap into, `[[no_unique_address]]` cannot make that trailing padding free. Rather than silently pay for a byte the layout doesn't otherwise need, the header refuses the combination at compile time. See [§16.4](#164-match-dispatch-mechanics) for the rest of how arms are laid out and dispatched.
 
 ---
 
@@ -1171,7 +1137,7 @@ If the primary alternative is not active, these functions print a diagnostic to 
 
 `value() &&` returns an rvalue reference and does not itself reset the `Option`.
 
-By contrast, `unwrap() &&` and `expect() &&` extract by value and reset the source after a successful extraction.
+By contrast, `unwrap() &&` and `expect() &&` extract by value and reset the source after a successful extraction — "successful" is doing real work here, not just describing the common case; see [§16.3](#163-exception-safety-during-state-changes) for what happens if the extraction itself throws.
 
 The pointer and dereference operators provide the familiar optional-style interface:
 
@@ -1285,6 +1251,8 @@ int main() {
 }
 ```
 The check and the unchecked read must remain correctly related: do not mutate the `Option` between them, and do not use this function when another thread can mutate the same object without synchronization.
+
+Mechanically, the `const&`/`&` overloads of `unwrap_unchecked()` are nothing more than `*static_cast<const T*>(address of the primary storage slot)` (or the non-`const` equivalent) — there is no branch on the discriminator at all, not even in a debug build. The `&&` overload is the same read wrapped in `std::move`. If the primary alternative is not actually active, this reads whatever object (or partially-formed/uninitialized bytes) currently occupies that union slot as if it were a `T`, which is undefined behavior in the strict sense — not merely "wrong value," but a violation the compiler is entitled to use for optimization in ways that make the resulting behavior unpredictable beyond just returning a nonsense `T`.
 
 ### 8.5 Fallback operations
 
@@ -1777,6 +1745,12 @@ int main() {
     std::println("second: {}", second.unwrap());
 }
 ```
+Internally, `swap` has three distinct paths, chosen at runtime by comparing the two discriminators:
+
+1. **Same alternative active on both sides.** The values are swapped directly, via a dispatch-table call into `std::ranges::swap` on that one alternative. Nothing is move-constructed.
+2. **Exactly one side is `None`.** The engaged side is move-constructed into the empty side and then reset, without touching a temporary `Option` at all.
+3. **Both sides are engaged with *different* alternatives.** This is the only path that needs a temporary: `*this` is move-constructed into a local `OptionStorage_`, `*this` is reset and move-constructed from `other`, `other` is reset and move-constructed from the temporary. This three-step shuffle is exactly why `swap` only requires every alternative to be move-*constructible*, not move-*assignable* — no alternative's `operator=` is ever called by this path.
+
 ---
 
 ## 12. Pointer views
@@ -1888,6 +1862,8 @@ int main() {
     std::println("hash: {}", hash);
 }
 ```
+The "internal sentinel" for `None` is a concrete, fixed value in the current revision: `static_cast<std::size_t>(-3333)`. For an engaged `Option` with at least one secondary alternative, the per-alternative hash is mixed with the active index using the familiar `boost::hash_combine`-style formula — `value_hash ^ (0x9e3779b9 + index + (value_hash << 6) + (value_hash >> 2))` — so that, say, `Option<int, long>` holding `int{5}` and `Option<int, long>` holding `long{5}` do not collide just because `std::hash<int>` and `std::hash<long>` happen to agree on `5`. For `Option<T>` with **no** secondary alternatives, there is nothing to disambiguate, so this mixing step is skipped entirely: the hash of an engaged `Option<T>` is *exactly* `std::hash<T>` of the contained value, unmodified. That's a deliberate simplification for the single-type case, not a hidden property to rely on — the combining step can and does change in the multi-alternative case, and nothing about `std::hash<rl::Option<T, Ts...>>`'s exact numeric output is part of the documented contract beyond "equal `Option`s hash equal."
+
 ---
 
 ## 14. Errors, exceptions, and failure behavior
@@ -2032,7 +2008,15 @@ The header does not provide `std::formatter` for `rl::Option`. Formatting an `Op
 
 The implementation uses manually managed storage for the primary and secondary alternatives, plus an active-state discriminator. It maintains alignment requirements for the stored alternatives and the discriminator.
 
-The object representation is an implementation detail. Do not serialize it by copying raw bytes, depend on exact `sizeof` values, or treat it as a stable ABI across header revisions, compilers, or standard-library implementations.
+Concretely, for `Option<T, Args...>`:
+
+- **The discriminator is a single integer, not a per-type flag.** Its type is chosen by a small trait (`option_index_type_<N>`, with `N = sizeof...(Args) + 1`): `unsigned char` if `N` fits, else `unsigned short`, else `std::size_t`. The value `0` means `None`. The value `1` means the primary type `T` is active. Each secondary alternative occupies `2, 3, 4, ...` in declaration order — the second template argument is index `2`, the third is `3`, and so on.
+- **The primary type gets dedicated storage; the secondaries share one union.** The top-level payload is itself a union of two things: a `Tp_` member for the primary type, and an `Alternative_<Args...>` member for the secondaries. `Alternative_<Args...>` is built recursively: `Alternative_<First, Rest...>` is a union of a `first_` member (type `First`) and a `rest_` member (type `Alternative_<Rest...>`). So for `Option<T, A, B, C>`, the secondary union is effectively "`A`, or (`B`, or `C`)" nested three unions deep, not a single flat union of `A`, `B`, and `C` side by side.
+- **Activating a deep secondary costs one step per level of nesting.** To construct the alternative at nesting depth `k` (0-indexed among the secondaries), the implementation placement-constructs `k` empty wrapper unions on the way down (`std::construct_at` on each intervening `Alternative_<...>`, which is itself a legitimate "live" union object with no initialized member yet) until it reaches the union that actually has the target type as a direct member, and only then constructs the real value there from the supplied arguments. Destruction reverses this: destroy the leaf value, then destroy each wrapper it passed through, in the opposite order, because each wrapper's own lifetime must end explicitly once its member's lifetime has ended. This is why the *n*-th secondary alternative is not "free" relative to the first one — it carries `n` extra union-activation and union-deactivation steps on every construction and destruction, which is exactly the kind of compounding cost that shows up when a project pushes many distinct secondary alternatives onto one `Option` (see [§17](#17-a-nine-alternative-walkthrough) and [§18.9](#189-dont-grow-the-alternative-list-for-just-in-case-extensibility)).
+- **Per-alternative operations are collected into dispatch tables, not `if`/`switch` chains.** Copy-construct, move-construct, copy-assign, move-assign, equality, three-way comparison, same-alternative `swap`, and hashing are each implemented once per alternative type and collected into a `static constexpr std::array` of function pointers, indexed by `active_index - 1` (the table has one entry for the primary plus one per secondary). The one exception is destruction: since the primary's destructor is called directly and inline wherever `reset()` happens, the destroy-dispatch table only needs entries for the secondaries, and is indexed by `active_index - 2`.
+- **Whole-object alignment and size follow directly from the above.** The object's alignment is the strictest alignment among `T`, every `Args`, and the discriminator type. Its payload size is the larger of `sizeof(T)` and `sizeof(Alternative_<Args...>)`, rounded up to that alignment; the discriminator sits immediately after the payload, and any trailing padding needed to make the whole object a multiple of its alignment comes last. When there are **zero** secondary alternatives, this collapses to exactly the same size and alignment as the header's internal single-type `Optional_<T>` building block — the `None`/multi-alternative machinery costs nothing extra for the common `Option<T>` case beyond what a bespoke hand-rolled optional would already need.
+
+None of the above is part of the stable public contract. It is accurate for the current revision of the header and is written down here because understanding *why* certain operations have the costs and guarantees they do (§16.3, §16.4, §17) requires knowing roughly how the object is laid out. Do not serialize the raw bytes of an `Option`, depend on its exact `sizeof`, or assume this layout survives a header upgrade, a different compiler, or a different standard library.
 
 ### 16.2 Triviality and special members
 
@@ -2040,29 +2024,256 @@ The internal storage layers conditionally preserve trivial destruction, copy con
 
 At the public `Option` level, copy/move operations are constrained by the capabilities of every declared alternative.
 
-### 16.3 Lifetime annotations
+### 16.3 Exception safety during state changes
 
-Where supported, the header applies a compiler-specific lifetime-bound annotation to reference and pointer views. This can help diagnostics identify a reference or pointer that outlives its owning `Option`. The annotation does not extend an object's lifetime and is not a substitute for correct ownership.
+Three places in the implementation go out of their way to order operations so that a throwing user type cannot leave an `Option` in a worse state than it started in, beyond the ordinary "this object's lifetime has ended" guarantee that applies to any C++ type:
 
-### 16.4 Diagnostics and type names
+- **Bare-value assignment stages a temporary before touching the old value.** When `option = some_value;` resolves to a movable target alternative, the implementation first constructs a temporary of that target type from `some_value` — while whatever alternative was previously active, if any, is still fully alive — and only afterwards resets the old alternative and move-constructs the real storage from the temporary. This matters whenever the assigned expression can read from the `Option`'s *current* value (directly or through aliasing), and it means a throwing converting constructor leaves the original value completely untouched rather than having already destroyed it. (When the target type isn't movable, this staging isn't possible, and the implementation falls back to constructing directly in place — which is also why `replace()` and `operator=` for a non-movable alternative type behave slightly differently from the movable case.)
+- **Copy/move assignment reuses live storage instead of always rebuilding it.** If both sides of an assignment already have the *same* alternative active, the value is assigned onto the existing object in place (falling back to destroy-then-reconstruct only when that type isn't copy-/move-assignable). Only when the active alternatives differ, or either side is `None`, does assignment reset the destination and construct the new alternative from scratch. Both the copy and move assignment operators check for self-assignment (`this == std::addressof(other)`) up front and no-op in that case, before any of the above.
+- **"Extract by value and empty the source" is conditioned on actually succeeding.** `unwrap() &&`, `expect() &&`, the shared `take_unchecked()` helper they (and `emplace() &&`, `unwrap_or() &&`, `unwrap_or_default() &&`, `unwrap_or_else() &&`) are built on, and the consuming-lambda wrapper behind the rvalue `map`, `and_then`, `map_or`, `map_or_else`, `map_or_transform`, `is_some_and`, and `is_none_or` overloads, all share one small RAII guard. The guard records `std::uncaught_exceptions()` at construction and, in its destructor, resets the `Option` only if that count has **not** increased since — i.e., only if the enclosing expression ran to completion without a new exception propagating through it. If, for example, `Tp_`'s move constructor throws while `unwrap() &&` is building its by-value return, the guard's destructor still runs (during unwinding), observes the higher exception count, and deliberately skips the reset — the `Option` is left exactly as engaged as it was before the call. So "extraction empties the source" is really "extraction empties the source *if it didn't throw while doing so*"; a type whose move constructor can throw should be understood with that caveat.
+
+### 16.4 `match()` dispatch mechanics
+
+- `match()` is one function template written with an explicit object parameter — `template <typename... Rp_, typename Self_, typename... Arms_> constexpr auto match(this Self_&& self, Arms_&&... arms)` — rather than three separately ref-qualified overloads. `std::forward_like<Self_>` is used to recover the right value category (`const&`, `&`, or `&&`) for whichever alternative turns out to be active, so one function body serves all three call forms.
+- Finding *which* alternative is active is a compile-time-unrolled, runtime-tested linear scan, not a jump table: a local generic lambda recurses over a compile-time index from `0` up to `sizeof...(Args)`, and at each step compares the live discriminator against `Index + 1` at runtime, stopping at the first match (`std::unreachable()` terminates the recursion if somehow none match, which cannot happen for a well-formed discriminator value). One more alternative in the list is, in the worst case, one more runtime comparison before the active type is identified.
+- Once the active type is known, the implementation walks the arm pack in source order. For each arm, whether its pattern *could* possibly apply to the active type is decided entirely at compile time via `if constexpr (pattern_matches_type_<Pattern, CurrentType>())` — an arm that statically cannot apply to the active alternative costs nothing at that call site, not even a skipped runtime branch. Only arms that are statically compatible with the active type get a runtime check (`matches_value_`, which evaluates the guard predicate, the `Some(value)` equality check, or the plain equality comparison, as appropriate). The first such arm whose runtime check returns `true` is invoked, with the forwarded value and the correctly deduced return type.
+- If execution runs off the end of the arm list for the engaged path without any runtime match — which can only happen when every statically-applicable arm was a guard and every one of them returned `false` at runtime — the implementation prints `Option<{type}>::match() failed - no matching pattern arm` to `stderr` and calls `std::abort()`. `None` is dispatched completely separately and more simply: the first arm in source order whose pattern is `None` or `Wild` is invoked with no arguments; `None` never goes through `matches_value_`'s runtime guard evaluation at all.
+- `Arm_<Pattern, Handler>` is laid out as `[[no_unique_address]] pattern`, then computed mid-padding so the handler starts on its own alignment boundary, then `handler` as the last member — relying on the handler to supply the whole struct's trailing alignment. This is exactly why `static_assert(alignof(handler_type) >= alignof(pattern_type))` exists (see [§6.5](#65-value-patterns-somevalue-and-ordinary-comparison-patterns)): a stricter-aligned pattern would need padding bytes *after* the handler, and a `[[no_unique_address]]` member with nothing following it to overlap into cannot make that padding free, so the combination is refused outright rather than silently costing an extra byte.
+- The three `static_assert`s that gate `match()` at compile time (an arm covers `None`; an arm covers the primary type; every alternative, primary and secondary, has at least one potentially-applicable arm) all go through the same `pattern_matches_type_` compile-time predicate used for dispatch. They check whether an arm's *pattern type* is the kind of thing that could ever apply to a given alternative type — never whether a guard's *runtime return value* will actually be `true` for the object in front of it at any particular moment. That gap between "statically could apply" and "actually did apply this time" is precisely what `std::abort()` exists to catch, and precisely why [§15.7](#157-runtime-guards-can-fail-after-static-coverage-succeeds)'s advice to end a guarded match with a true catch-all is not optional once more than one guard is in play for the same alternative.
+
+### 16.5 Diagnostics and type names
 
 Bad-access diagnostics include a type name. The implementation uses C++26 reflection when its feature-test macros are available; otherwise, it parses `__PRETTY_FUNCTION__`.
 
-Diagnostic spelling is implementation-dependent and should not be treated as a stable interface.
+Concretely, when reflection is unavailable, the type name is recovered from the compiler's own function signature for a small helper template (`get_type_name<Qp_>()`), by finding the substring between the outermost `[` and `]` that GCC/Clang embed in `__PRETTY_FUNCTION__`, locating the literal text `"Qp_ = "` inside it, and then scanning forward character by character — tracking nested `<...>`, `(...)`, and `[...]` depth — until a `,` or `;` appears at depth zero, or an unmatched `]` is found. That scan is necessary, not cosmetic: a naive "stop at the first comma" approach would cut off a type name like `std::pair<int, int>` or `std::array<int, 4>` partway through, because those names contain commas of their own at a nested depth. The same scan is reused unchanged whether the subview helper is `std::string_view::subview` (when available) or `substr`.
 
-### 16.5 Header side effects
+This machinery exists purely to make `abort()` diagnostics readable — messages such as `Option<int>::unwrap() failed: Option does not wield any value.`, `Option<int>::unwrap<ReadError>() failed: active alternative does not match.`, or `Option<int>::match() failed - no matching pattern arm`. The exact spelling of a type name in these messages is compiler- and configuration-dependent (reflection vs. `__PRETTY_FUNCTION__`, and even which `__PRETTY_FUNCTION__` format a given compiler emits), so, as [§16.4 of the original notes already warned](#164-match-dispatch-mechanics) in spirit, nothing about the literal text of these messages should be treated as a stable interface. See [§18.8](#188-dont-build-tooling-around-the-exact-wording-of-abort-diagnostics) for the practical version of that warning.
 
-The header pushes and restores compiler diagnostic state for the compiler families it recognizes. Its internal helper macros are undefined before the header closes.
+### 16.6 Hashing
+
+`std::hash<rl::Option<T, Ts...>>` is defined only when every alternative is itself hashable via `std::hash`. Its behavior:
+
+- The empty state always hashes to the fixed sentinel `static_cast<std::size_t>(-3333)`, regardless of `T` or `Ts...`.
+- When there is at least one secondary alternative, an engaged state's hash is `std::hash<ActiveType>{}(value)` combined with the active index using `value_hash ^ (0x9e3779b9 + index + (value_hash << 6) + (value_hash >> 2))` — the same combine formula popularized by `boost::hash_combine`. This is what keeps, say, `Option<int, long>` holding `5` as an `int` from hashing identically to the same `Option` holding `5` as a `long`, even though `std::hash<int>(5) == std::hash<long>(5)` on common implementations.
+- When there are **zero** secondary alternatives, there is nothing to disambiguate against, so the combine step is skipped entirely: an engaged `Option<T>`'s hash is exactly `std::hash<T>` of the contained value, byte-for-byte identical to hashing a bare `T`. This is a simplification specific to the single-alternative case, not a documented cross-version guarantee.
+
+As with any hash function, collisions are possible and expected; `std::hash<rl::Option<...>>`'s only documented obligation is that equal `Option`s hash equal, which the sentinel and the per-alternative mixing above are both designed to uphold.
+
+### 16.7 Header side effects
+
+The header pushes and restores compiler diagnostic state for the compiler families it recognizes (Clang via `#pragma clang diagnostic push`/`pop`, GCC via the `#pragma GCC diagnostic` equivalents), with the final `pop` sitting at the very end of the file, after the closing `#endif` guards. This means the suppressed warnings (`-Wc++98-compat`, `-Wreserved-identifier`, and similar pedantic-compatibility warnings, among others) apply only while the header's own declarations are being parsed — they do not leak into code written after the `#include` line in the including translation unit.
+
+Three function-like macros used internally — `RL_LIFETIME_BOUND`, `RL_SUPPORTS_REFLECTION`, and `RL_IS_SUBVIEW_OR_SUBSTR` — are all explicitly `#undef`'d before the header's closing `#endif`. They do not leak into the including translation unit's macro namespace either, so there is no risk of an including file's own identically-named macro silently colliding with (or being silently overwritten by) this header's internal ones.
 
 The header also makes a global using-declaration for the `operator>>=` used by the pattern-matching DSL. This is intentional for the infix arm syntax, but it is still a global namespace exposure that users should be aware of.
 
 ---
 
-## 17. Complete API reference
+## 17. A nine-alternative walkthrough
+
+Every multi-alternative example earlier in this document uses two or three alternatives. This section works through a `rl::Option` with **nine** distinct alternative types — one primary plus eight secondaries — to make the scaling behavior described in [§16.1](#161-storage-model) concrete, and to show that `match()`'s compile-time coverage checking still works exactly the same way once the alternative list gets large.
+
+The motivating shape is a lexer token payload: a single scanned token can carry an integer literal, a floating-point literal, a boolean literal, a string literal, an identifier, an operator, a piece of punctuation, a keyword, or an explicit end-of-file marker — and, separately from all of that, a `Option` built around this type can itself be `None` when nothing has been scanned yet. That last distinction is exactly the kind of thing a `std::variant<...>` alone cannot express, but `rl::Option`'s separate empty state can: "no token yet" (`None`) is different from "a token that happens to be the explicit EOF marker" (an engaged `EofTag` alternative).
+
+```cpp
+#include "rl_option.hpp"
+
+#include <print>
+#include <string>
+
+enum class Operator { plus, minus, star, slash };
+enum class Punct { lparen, rparen, comma, semicolon };
+enum class Keyword { kw_if, kw_else, kw_while, kw_return, kw_fn };
+
+struct Identifier {
+    std::string name;
+    friend auto operator==(const Identifier&, const Identifier&)
+        -> bool = default;
+};
+
+struct EofTag {
+    friend auto operator==(const EofTag&, const EofTag&) -> bool = default;
+};
+
+// Primary (1): long long          -- integer literal
+// Secondaries (8): double, bool, std::string, Identifier,
+//                  Operator, Punct, Keyword, EofTag
+using Token = rl::Option<long long, double, bool, std::string, Identifier,
+                         Operator, Punct, Keyword, EofTag>;
+
+void describe(const Token& token) {
+    token.match(
+        rl::None >>= [] {
+            std::println("<no token scanned yet>");
+        },
+        [](const long long&) { return true; } >>= [](long long value) {
+            std::println("int literal: {}", value);
+        },
+        [](const double&) { return true; } >>= [](double value) {
+            std::println("float literal: {}", value);
+        },
+        [](const bool&) { return true; } >>= [](bool value) {
+            std::println("bool literal: {}", value);
+        },
+        [](const std::string&) { return true; } >>= [](const std::string& value) {
+            std::println("string literal: \"{}\"", value);
+        },
+        [](const Identifier&) { return true; } >>= [](const Identifier& id) {
+            std::println("identifier: {}", id.name);
+        },
+        [](const Operator&) { return true; } >>= [](Operator op) {
+            std::println("operator #{}", static_cast<int>(op));
+        },
+        [](const Punct&) { return true; } >>= [](Punct p) {
+            std::println("punctuation #{}", static_cast<int>(p));
+        },
+        [](const Keyword&) { return true; } >>= [](Keyword kw) {
+            std::println("keyword #{}", static_cast<int>(kw));
+        },
+        [](const EofTag&) { return true; } >>= [] {
+            std::println("end of file");
+        }
+    );
+}
+
+int main() {
+    Token empty(rl::None);
+    Token integer(rl::Some<long long>(42));
+    Token name(rl::Some(Identifier{"accumulator"}));
+    Token eof(rl::Some(EofTag{}));
+
+    describe(empty);
+    describe(integer);
+    describe(name);
+    describe(eof);
+
+    std::println("integer holds long long: {}", integer.is_some<long long>());
+    std::println("name holds Identifier: {}", name.is_some<Identifier>());
+    std::println("eof holds int: {}", eof.is_some<long long>());
+}
+```
+
+A few things worth calling out about this specific shape:
+
+- **Ten arms for ten states.** `match()` needs one arm for `None` plus one for each of the nine alternative types; omitting any one of them — including `EofTag`, which is easy to treat as an afterthought — fails the `static_assert` in [§6.4](#64-type-coverage-is-checked-runtime-guard-success-is-not) at compile time, not silently at runtime.
+- **The discriminator is still a single byte.** With `N = 9` (one primary plus eight secondaries), the discriminator needs to represent `10` possible values (`0` through `9`), which is still comfortably inside `unsigned char`'s range per [§16.1](#161-storage-model). Growing the alternative list further doesn't widen the discriminator until it would need to represent more than 256 states — an unusual thing to want from a single tagged value in the first place.
+- **The recursion depth for the deepest secondary is eight.** `EofTag`, the last secondary in the list, sits at the bottom of eight nested `Alternative_<...>` unions. Constructing an `EofTag` token — which happens every single time the lexer reaches end-of-file — placement-constructs seven empty wrapper unions before reaching the one that actually holds an `EofTag`, then constructs the (stateless) `EofTag` itself; destroying it undoes those same eight steps in reverse. None of that work is visible in the example above, but it is real object code generated once per secondary position, and it compounds with every alternative added after it — see [§18.9](#189-dont-grow-the-alternative-list-for-just-in-case-extensibility) for when that cost is and isn't worth it.
+- **`is_some<long long>()` on the `eof` token is simply `false`.** It does not throw, abort, or need a prior check; typed `is_some<Q>()` is always a safe query regardless of which alternative (if any) is actually active, which is exactly why the last line of `main()` above is safe to call even though it is checking for a type that obviously isn't the active one.
+
+This is also a reasonable point at which to reconsider whether `rl::Option` with nine alternatives is the right tool at all, rather than, say, a conventional `enum class TokenKind` plus a `std::variant` or a hand-rolled tagged union designed around the lexer's actual hot path. `rl::Option` adds the separate `None` state and the pattern-matching convenience shown above; it does not remove the structural cost described in §16.1 of having many secondary alternatives. Whether that trade is worthwhile is a question about the specific program, not something this document can answer in the abstract — but §16.1's description of what "one more alternative" actually costs is the information needed to make that call deliberately instead of by accident.
+
+---
+
+## 18. Known pitfalls and anti-patterns
+
+This section collects behaviors that compile, run, and look reasonable, but that rest on an assumption the implementation does not actually honor. Each entry names the assumption, says what actually happens, and points back to the section that establishes it.
+
+### 18.1 Expecting `Option<T>()` to mean "empty"
+
+```cpp
+// rl::Option<int> count;  // Does not compile: Option() is deleted.
+```
+There is no implicit empty state reachable through default construction, an empty brace-initializer, or a default member initializer that omits an argument. Every `Option` must be constructed with `Some`, `None`, or `Default` (§4.1, §15.2). Code that is ported from `std::optional<T> count;` needs to become `rl::Option<int> count(rl::None);`, not a bare declaration.
+
+### 18.2 Treating `Option<T, E>` as `std::expected<T, E>`
+
+```cpp
+rl::Option<int, ParseError> parse(std::string_view text);
+
+// Looks like error-propagating chaining. It is not:
+auto doubled = parse(text).map([](int v) { return v * 2; });
+```
+If `parse(text)` actually produced the `ParseError` alternative, `map` silently discards it and returns an empty `Option<int>` — the specific error is gone, not just unobserved (§9.7). The same applies to `and_then`. If the error value needs to survive a transformation, use `match()` (§10.2) or write the transformation to check `is_some<ParseError>()` explicitly before falling back to the primary-only combinators.
+
+### 18.3 Calling `unwrap()`/`value()`/`expect()` as if they were exceptions
+
+```cpp
+// This does not "throw a catchable error on empty":
+int n = maybe_count.unwrap();
+```
+A failed checked access prints to `stderr` and calls `std::abort()` (§14.1). There is no library-defined exception type involved, and wrapping the call in `try { ... } catch (...) { ... }` does not protect the program — `std::abort()` is not recoverable by a `catch` block. If a failure needs to be recoverable, check `is_some()` (or the typed `is_some<Q>()`) first, or route the whole decision through `match()`.
+
+### 18.4 Using `unwrap_unchecked()` as a "fast path"
+
+```cpp
+// Wrong: no verification that the primary alternative is active.
+const int fast = maybe_value.unwrap_unchecked();
+```
+This is not a cheaper version of `unwrap()` that happens to skip a branch in release builds while still being "basically safe." It is a direct read of the union storage with no discriminator check anywhere, in any build mode (§8.4, §16.1). If the primary alternative is not actually active, this is undefined behavior in the full sense — not "returns a wrong but harmless integer," but a condition the optimizer is entitled to assume cannot happen, with results that can go well beyond the value of that one expression. The only legitimate use is immediately after an `is_some<T>()` (or equivalent) check that the same thread has just performed and nothing has mutated the `Option` since.
+
+### 18.5 Trusting compile-time coverage to mean runtime coverage
+
+```cpp
+value.match(
+    rl::None >>= [] { /* ... */ },
+    rl::Where([](int n) { return n > 0; }) >>= [](int n) { /* ... */ },
+    rl::Where([](int n) { return n < 0; }) >>= [](int n) { /* ... */ }
+    // No arm for n == 0.
+);
+```
+This compiles: both guards are invocable with `int`, so the primary type is statically "covered" for the purposes of §6.4's three `static_assert`s. It still aborts at runtime the moment `value` holds `0`, because neither guard's *runtime* result is `true` for that input (§6.4, §15.7, §16.4). The fix is not a different pattern syntax — it's making sure the guards are jointly exhaustive, normally by ending with `rl::Wild` or an unconditional handler.
+
+### 18.6 Pairing a value pattern with an ordinarily aligned lambda
+
+```cpp
+// Fails a static_assert, not a runtime check:
+value.match(
+    rl::None >>= [] {},
+    rl::Some(0) >>= [] { /* handle zero */ },   // error: alignment mismatch
+    rl::Wild >>= [](int n) { /* ... */ }
+);
+```
+`rl::Some(0)` has `int`'s alignment; an ordinary capture-less lambda typically has alignment `1`. `Arm_`'s layout requires the handler to supply the arm's trailing alignment (§6.5, §16.4), so this specific combination is rejected at compile time rather than silently costing an extra padding byte. Reach for `rl::Where([](int n) { return n == 0; })` instead of a raw value pattern whenever the handler is an ordinary lambda — the predicate and the handler then have compatible, usually-1, alignment.
+
+### 18.7 Assuming every `std::move(option).method()` empties `option`
+
+```cpp
+std::string s = std::move(opt).value();   // opt is still engaged afterward.
+auto fallback = std::move(opt).or_else(supplier); // opt's own state is untouched by this call.
+```
+Only the extraction-flavored rvalue operations reset the source on success: `unwrap()`, `expect()`, `unwrap<Q>()`, `take()`, `emplace() &&`, the fallback-by-value functions, and the consuming rvalue overloads of `map`/`and_then`/`map_or`/`map_or_else`/`map_or_transform`/`is_some_and`/`is_none_or`. `value() &&` returns `T&&` without resetting anything, and `or_else() &&` moves the receiver *into its return value* without separately clearing the moved-from object (§15.9). Don't assume "I called it on an rvalue" is equivalent to "the source is now empty" — check the specific member in §19 (or re-read §15.9) rather than extrapolating from one operation to another.
+
+### 18.8 Don't build tooling around the exact wording of abort diagnostics
+
+```text
+Option<int>::unwrap() failed: Option does not wield any value.
+```
+The type name embedded in this message comes from either C++26 reflection or a hand-rolled `__PRETTY_FUNCTION__` parser, selected per translation unit based on feature-test macros (§16.5). Two otherwise-identical programs built with different compilers — or the same program built before and after a toolchain upgrade — can legitimately print differently formatted (but behaviorally identical) diagnostics for the exact same failure. Log-scraping or test assertions that pattern-match the literal text of these messages are coupling to an explicitly non-stable implementation detail, not to the library's documented behavior (which is simply: "this call aborts the process").
+
+### 18.9 Don't grow the alternative list for "just in case" extensibility
+
+```cpp
+// Every one of these "just in case" alternatives has a real, compounding cost.
+using Config = rl::Option<std::string, int, double, bool, std::vector<int>,
+                          std::map<std::string, std::string>, /* ...and more */>;
+```
+Each secondary alternative adds one more level of nested union activation/deactivation on construction and destruction (§16.1), one more entry in every per-alternative dispatch table (copy, move, copy-assign, move-assign, equality, three-way comparison, same-alternative swap, hashing), and one more required arm in every `match()` that needs to stay exhaustive (§6.4). None of this shows up as a correctness problem — the type system and the `static_assert`s in §6.4 will still hold everyone honest — but it is compile-time cost, generated-code size, and `match()` verbosity that accrues whether or not the "just in case" alternative is ever actually constructed at runtime. Prefer the smallest alternative list that reflects types the calling code genuinely needs to distinguish at the type level, and reach for a narrower `Option<T, E>` (or a separate `Option` per concern) over a single `Option` with many secondary alternatives when the alternatives aren't actually mutually exclusive facets of one conceptual value.
+
+### 18.10 Expecting `Default` to produce an empty `Option`
+
+```cpp
+rl::Option<int> value(rl::Default); // value.is_some() is true, not false.
+```
+`rl::Default` always engages an alternative — the primary type if it's default-constructible, otherwise the first default-constructible secondary (§3.3). It never produces `None`. Code migrating from `std::optional<T> value{};` (which is empty) to `rl::Option<T>` should use `rl::Option<T>(rl::None)`, not `rl::Option<T>(rl::Default)`, to preserve "starts empty" semantics.
+
+### 18.11 Expecting `match()`'s non-`void` dispatch to auto-wrap a raw value in `Some`
+
+```cpp
+// Does not compile in the supplied header's non-void dispatch path:
+// auto result = value.match(
+//     rl::None >>= [] { return 0; },
+//     rl::Wild >>= [](int n) { return n; }
+// );
+```
+The non-`void` dispatcher deduces an `Option`-shaped final result type and requires every handler to return something convertible to *that* type directly (§6.7). It does not take a raw `int` from one arm and silently wrap it in `Some<int>` for you. Write every non-`void` arm so it returns the already-wrapped final result type explicitly (an `rl::Option<...>` constructed with `Some(...)` or `None`), matching the pattern already shown in §6.7's working example.
+
+---
+
+## 19. Complete API reference
 
 This section lists the public vocabulary and member operations implemented by the supplied header. Constraints are summarized; the compiler's constrained overloads remain the final authority for a particular type.
 
-### 17.1 Names in `namespace rl`
+### 19.1 Names in `namespace rl`
 
 | Name | Kind | Purpose |
 |---|---|---|
@@ -2077,7 +2288,7 @@ This section lists the public vocabulary and member operations implemented by th
 
 The header also specializes `std::hash` for `Option<T, Ts...>` when every alternative is hashable.
 
-### 17.2 `Some<T>`
+### 19.2 `Some<T>`
 
 | Member | Qualifier | Requirements / result |
 |---|---|---|
@@ -2092,7 +2303,7 @@ The header also specializes `std::hash` for `Option<T, Ts...>` when every altern
 
 The deduction guide lets `Some(value)` deduce `Some<T>` from the argument.
 
-### 17.3 `Option<T, Ts...>`: construction and assignment
+### 19.3 `Option<T, Ts...>`: construction and assignment
 
 | Operation | Requirements / behavior |
 |---|---|
@@ -2113,7 +2324,7 @@ The deduction guide lets `Some(value)` deduce `Some<T>` from the argument.
 
 There is no converting constructor from a bare payload value and no general converting constructor between differently-shaped `Option` specializations.
 
-### 17.4 `Option<T, Ts...>`: state and access
+### 19.4 `Option<T, Ts...>`: state and access
 
 | Member | Qualifiers | Scope |
 |---|---|---|
@@ -2132,7 +2343,7 @@ There is no converting constructor from a bare payload value and no general conv
 | `unwrap_none()` | `const&`, `&`, `&&` | Checks that the entire `Option` is empty |
 | `unwrap_unchecked()` | `const&`, `&`, `&&` | Unchecked primary access by value; invalid state is undefined behavior |
 
-### 17.5 `Option<T, Ts...>`: fallback and functional operations
+### 19.5 `Option<T, Ts...>`: fallback and functional operations
 
 | Member | Qualifiers | Behavior |
 |---|---|---|
@@ -2148,7 +2359,7 @@ There is no converting constructor from a bare payload value and no general conv
 | `is_some_and(predicate)` | `const&`, `&`, `&&` | Tests the primary alternative; an rvalue receiver with an active primary is consumed and reset after the predicate call, irrespective of the returned boolean |
 | `is_none_or(predicate)` | `const&`, `&`, `&&` | True for `None` or a primary value satisfying the predicate; secondary state is false; an rvalue receiver with an active primary is consumed and reset after the predicate call |
 
-### 17.6 `Option<T, Ts...>`: mutation and pointer views
+### 19.6 `Option<T, Ts...>`: mutation and pointer views
 
 | Member | Qualifiers | Behavior |
 |---|---|---|
@@ -2164,7 +2375,7 @@ There is no converting constructor from a bare payload value and no general conv
 | `as_immut_ptr()` | `const&` | `Option<const T*>`; rvalue forms deleted |
 | `as_immut_ptr<Q>()` | `const&` | `Option<const Q*>`; requires declared alternative `Q`; rvalue forms deleted |
 
-### 17.7 `Option<T, Ts...>`: comparisons
+### 19.7 `Option<T, Ts...>`: comparisons
 
 | Expression | Availability |
 |---|---|
@@ -2178,7 +2389,7 @@ There is no converting constructor from a bare payload value and no general conv
 
 ---
 
-## 18. Frequently asked questions
+## 20. Frequently asked questions
 
 ### Does `Option<T>` start empty?
 
@@ -2224,6 +2435,10 @@ No. Compile-time checking verifies type applicability. It cannot prove the resul
 
 Not in the supplied header. The non-void dispatch path deduces an `Option`-shaped result but expects handlers to return a value convertible to that final result type. Return an explicit `Option<...>` from every non-void arm.
 
+### How many alternatives can an `Option` have?
+
+There's no fixed cap in the API itself — the discriminator trait (§16.1) scales from `unsigned char` up to `std::size_t` as the alternative count grows, and `Alternative_`'s recursive union can nest arbitrarily deep. In practice, the per-alternative cost described in §16.1 and demonstrated in §17 (one more nested union activation, one more dispatch-table entry, one more required `match()` arm per secondary) grows with the list, so the practical limit is whatever amount of generated code and `match()` verbosity a given project is willing to accept, not a hard limit in the header. See §18.9 for why "add it just in case" is a bad default.
+
 ### Can I print an `Option` directly?
 
 No `std::formatter` specialization is supplied. Extract or match the value and print that. The reason to not implement `std::formatter` is because it breaks predictability of the returning values. And thus, any handler returned are always wrapped into Option<T> instead of `T`. They shall be unwrapped always. If primitive were unwrapped implicitly but the classes weren't, it would've destroyed the reasoning and immediately create ambiguous returns which must be handled explicitly.
@@ -2240,10 +2455,10 @@ The public operations are broadly declared `constexpr`, and valid paths can be e
 
 ---
 
-## 19. License
+## 21. License
 
 This project is licensed under the **GNU General Public License, version 3**.
 
 SPDX-License-Identifier: `GPL-3.0`
 
-See the repository's `LICENSE` file for the full license text. 
+See the repository's `LICENSE` file for the full license text.
