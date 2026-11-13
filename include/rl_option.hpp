@@ -2635,18 +2635,6 @@ class alignas(
         : data{Opt::Default{}} {}
 
   public:
-    template <typename Up_, typename Target_ = typename details::
-                                match_alternative_<Up_, Tp_, Args_...>::type>
-    constexpr Option(Up_ &&val_) noexcept(
-        std::is_nothrow_constructible_v<Target_, Up_>)
-        requires(!details::__is_option_<Up_> &&
-                 !details::is_some_pattern_<std::remove_cvref_t<Up_>>::value &&
-                 !std::same_as<std::remove_cvref_t<Up_>, Opt::None> &&
-                 !std::same_as<std::remove_cvref_t<Up_>, Opt::Default> &&
-                 details::match_alternative_<Up_, Tp_, Args_...>::valid)
-        : data{std::in_place_type<Target_>, std::forward<Up_>(val_)} {}
-
-  public:
     constexpr Option(const Option &)
         requires(std::is_copy_constructible_v<Tp_> &&
                  (std::is_copy_constructible_v<Args_> && ...))
