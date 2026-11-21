@@ -1763,9 +1763,8 @@ struct __collect_none_match_result_<std::tuple<Arms_...>> {
 template <typename ResultsTuple_> struct __match_results_are_consistent_;
 template <typename... Results_>
 struct __match_results_are_consistent_<std::tuple<Results_...>>
-    : std::bool_constant<
-          (std::is_void_v<Results_> && ...) ||
-          !(std::is_void_v<Results_> || ...)> {
+    : std::bool_constant<(std::is_void_v<Results_> && ...) ||
+                         !(std::is_void_v<Results_> || ...)> {
     static constexpr bool has_void = (std::is_void_v<Results_> || ...);
 };
 
@@ -1777,8 +1776,9 @@ struct __match_return_types_are_consistent_<std::tuple<Alternatives_...>,
   private:
     using NoneResults_ =
         typename __collect_none_match_result_<std::tuple<Arms_...>>::type;
-    using SomeResults_ = typename __collect_some_match_results_<
-        std::tuple<Alternatives_...>, std::tuple<Arms_...>>::type;
+    using SomeResults_ =
+        typename __collect_some_match_results_<std::tuple<Alternatives_...>,
+                                               std::tuple<Arms_...>>::type;
     using AllResults_ =
         typename __tuple_cat_types_<NoneResults_, SomeResults_>::type;
 
@@ -1823,16 +1823,14 @@ using __wrap_in_option_t = typename __wrap_in_option_<T_>::type;
 template <typename ReturnType_, typename ResultsTuple_>
 struct __match_results_convertible_to_;
 template <typename ReturnType_, typename... Results_>
-struct __match_results_convertible_to_<ReturnType_,
-                                       std::tuple<Results_...>>
-    : std::bool_constant<
-          (can_wrap_result_<ReturnType_, Results_> && ...)> {};
+struct __match_results_convertible_to_<ReturnType_, std::tuple<Results_...>>
+    : std::bool_constant<(can_wrap_result_<ReturnType_, Results_> && ...)> {};
 
 template <typename ReturnTypesTuple_, typename ResultsTuple_>
 struct __match_explicit_results_convertible_ : std::true_type {};
 template <typename ReturnType_, typename ResultsTuple_>
-struct __match_explicit_results_convertible_<
-    std::tuple<ReturnType_>, ResultsTuple_>
+struct __match_explicit_results_convertible_<std::tuple<ReturnType_>,
+                                             ResultsTuple_>
     : __match_results_convertible_to_<__wrap_in_option_t<ReturnType_>,
                                       ResultsTuple_> {};
 template <typename First_, typename Second_, typename... Rest_,
@@ -1953,14 +1951,13 @@ struct __match_unwrapped_return_type_<std::tuple<R1_, R2_, Rest_...>,
 };
 
 template <typename AlternativesTuple_, typename ArmsTuple_,
-          bool Consistent_ =
-              __match_return_types_are_consistent_<AlternativesTuple_,
-                                                    ArmsTuple_>::value>
+          bool Consistent_ = __match_return_types_are_consistent_<
+              AlternativesTuple_, ArmsTuple_>::value>
 struct __match_inferred_results_convertible_ : std::false_type {};
 
 template <typename... Alternatives_, typename... Arms_>
-struct __match_inferred_results_convertible_<
-    std::tuple<Alternatives_...>, std::tuple<Arms_...>, true> {
+struct __match_inferred_results_convertible_<std::tuple<Alternatives_...>,
+                                             std::tuple<Arms_...>, true> {
   private:
     using ResultTypes_ = typename __match_return_types_are_consistent_<
         std::tuple<Alternatives_...>, std::tuple<Arms_...>>::type;
@@ -1990,8 +1987,7 @@ using __pack_element_t = typename __pack_element_impl_<Index_, Ts_...>::type;
 // temporary argument it is F, and for an lvalue argument it is F&.
 // Never prefer F_& here: doing so can infer a different overload from the one
 // that std::forward<F_>(op) invokes.
-template <typename F_, typename Arg_,
-          bool = std::is_invocable_v<F_, Arg_>>
+template <typename F_, typename Arg_, bool = std::is_invocable_v<F_, Arg_>>
 struct alignas(1) __map_invoke_result_materializable_ : std::false_type {};
 
 template <typename F_, typename Arg_>
@@ -2023,7 +2019,8 @@ struct alignas(1) __nullary_invoke_result_materializable_<F_, true> {
         std::is_constructible_v<std::remove_cvref_t<R_>, R_>;
 };
 
-template <typename F_, typename Arg_, bool = __map_invocable_non_void_<F_, Arg_>>
+template <typename F_, typename Arg_,
+          bool = __map_invocable_non_void_<F_, Arg_>>
 struct alignas(1) __map_single_result_ {
     using type = void;
 };
@@ -2044,16 +2041,19 @@ struct alignas(1) __collect_map_results_<AccTuple_, F_> {
     using type = AccTuple_;
 };
 
-template <typename AccTuple_, typename F_, typename FirstArg_, typename... RestArgs_>
-struct alignas(1) __collect_map_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
+template <typename AccTuple_, typename F_, typename FirstArg_,
+          typename... RestArgs_>
+struct alignas(1)
+    __collect_map_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
   private:
     using SingleRes_ = __map_single_result_t<F_, FirstArg_>;
     using NextAcc_ = std::conditional_t<
         __map_invocable_non_void_<F_, FirstArg_>,
-        typename __append_unique_<AccTuple_, SingleRes_>::type,
-        AccTuple_>;
+        typename __append_unique_<AccTuple_, SingleRes_>::type, AccTuple_>;
+
   public:
-    using type = typename __collect_map_results_<NextAcc_, F_, RestArgs_...>::type;
+    using type =
+        typename __collect_map_results_<NextAcc_, F_, RestArgs_...>::type;
 };
 
 template <typename F_, typename... Args_>
@@ -2079,12 +2079,13 @@ concept __all_map_or_valid_ =
 
 template <typename F_, typename Arg_>
 concept __predicate_invocable_ = requires(F_ &&f, Arg_ &&arg) {
-    { std::invoke(static_cast<F_ &&>(f), static_cast<Arg_ &&>(arg)) } -> std::convertible_to<bool>;
+    {
+        std::invoke(static_cast<F_ &&>(f), static_cast<Arg_ &&>(arg))
+    } -> std::convertible_to<bool>;
 };
 
 template <typename F_, typename... Args_>
-concept __all_predicate_invocable_ =
-    (__predicate_invocable_<F_, Args_> && ...);
+concept __all_predicate_invocable_ = (__predicate_invocable_<F_, Args_> && ...);
 
 template <typename Alternative_, typename Value_>
 concept option_value_comparable_ =
@@ -2117,8 +2118,7 @@ struct alignas(1) __tuple_cat_unique_<Tuple1_, std::tuple<First_, Rest_...>> {
 
 // The returned Option must be materializable from the actual invoke result.
 // F_ is the forwarded callable category used by the implementation.
-template <typename F_, typename Arg_,
-          bool = std::is_invocable_v<F_, Arg_>>
+template <typename F_, typename Arg_, bool = std::is_invocable_v<F_, Arg_>>
 struct alignas(1) __and_then_invocable_impl_ : std::false_type {};
 
 template <typename F_, typename Arg_>
@@ -2134,8 +2134,7 @@ struct alignas(1) __and_then_invocable_impl_<F_, Arg_, true> {
 };
 
 template <typename F_, typename Arg_>
-concept __and_then_invocable_ =
-    __and_then_invocable_impl_<F_, Arg_>::value;
+concept __and_then_invocable_ = __and_then_invocable_impl_<F_, Arg_>::value;
 
 template <typename F_, typename Arg_, bool = __and_then_invocable_<F_, Arg_>>
 struct alignas(1) __and_then_single_types_ {
@@ -2159,13 +2158,19 @@ struct alignas(1) __collect_and_then_results_<AccTuple_, F_> {
     using type = AccTuple_;
 };
 
-template <typename AccTuple_, typename F_, typename FirstArg_, typename... RestArgs_>
-struct alignas(1) __collect_and_then_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
+template <typename AccTuple_, typename F_, typename FirstArg_,
+          typename... RestArgs_>
+struct alignas(1)
+    __collect_and_then_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
   private:
-    using FirstTypesTuple_ = typename __and_then_single_types_<F_, FirstArg_>::type;
-    using NextAcc_ = typename __tuple_cat_unique_<AccTuple_, FirstTypesTuple_>::type;
+    using FirstTypesTuple_ =
+        typename __and_then_single_types_<F_, FirstArg_>::type;
+    using NextAcc_ =
+        typename __tuple_cat_unique_<AccTuple_, FirstTypesTuple_>::type;
+
   public:
-    using type = typename __collect_and_then_results_<NextAcc_, F_, RestArgs_...>::type;
+    using type =
+        typename __collect_and_then_results_<NextAcc_, F_, RestArgs_...>::type;
 };
 
 template <typename F_, typename... Args_>
@@ -2177,8 +2182,8 @@ concept __all_and_then_alternatives_ =
     (__and_then_invocable_<F_, Args_> && ...);
 
 template <typename F_, typename... Args_>
-using __and_then_return_type_t =
-    typename __tuple_to_option_<__collect_and_then_results_t<F_, Args_...>>::type;
+using __and_then_return_type_t = typename __tuple_to_option_<
+    __collect_and_then_results_t<F_, Args_...>>::type;
 
 }; /* namespace details */
 
@@ -2925,10 +2930,10 @@ class alignas(
     }
 
   private:
-    constexpr auto ensure_not_destroying_(void) const noexcept(true)
-        -> void {
+    constexpr auto ensure_not_destroying_(void) const noexcept(true) -> void {
         if (this->is_some.index_ == destroying_index_) {
-            details::panic_("cannot mutate Option while an alternative is being destroyed");
+            details::panic_(
+                "cannot mutate Option while an alternative is being destroyed");
         }
     }
 
@@ -2936,7 +2941,8 @@ class alignas(
     constexpr auto reset_(void) noexcept(true) -> void {
         const std::size_t index_{
             static_cast<std::size_t>(this->is_some.index_)};
-        if (index_ == 0 || index_ == static_cast<std::size_t>(destroying_index_)) {
+        if (index_ == 0 ||
+            index_ == static_cast<std::size_t>(destroying_index_)) {
             return;
         }
         this->is_some.index_ = destroying_index_;
@@ -3129,8 +3135,7 @@ class alignas(
         typename details::option_index_type_<sizeof...(Args_) + 2>::type>())
     [[nodiscard]] Option {
   private:
-    template <typename, typename...>
-    friend class Option;
+    template <typename, typename...> friend class Option;
 
   private:
     using Data_ = details::OptionStorage_<Tp_, Args_...>;
@@ -3318,13 +3323,13 @@ class alignas(
     }
 
   public:
-    constexpr auto has_any_engaged_value [[nodiscard]] (void) const
+    constexpr auto has_any_engaged_value [[nodiscard]](void) const
         noexcept(true) -> bool {
         return this->is_some();
     }
 
   public:
-    constexpr Option(void) = delete;
+    constexpr Option(void) = delete("Option does not support empty-handed initialization. Use Some<T>(v) or Default to prevent deletion.");
 
   public:
     constexpr Option(const typename details::Opt::Some<Tp_> &some) noexcept(
@@ -3388,7 +3393,7 @@ class alignas(
                  !std::same_as<std::remove_cvref_t<Up_>, Opt::Default> &&
                  details::match_alternative_<Up_, Tp_, Args_...>::valid &&
                  std::is_constructible_v<Target_, Up_>)
-        : data{std::in_place_type<Target_>, std::forward<Up_>(val_)} {}
+    = delete ("Option does not support default T constructors.");
 
   public:
     constexpr Option(typename details::Opt::None none) noexcept(true)
@@ -3427,7 +3432,8 @@ class alignas(
     constexpr Option(const Option &)
         requires(not(std::is_copy_constructible_v<Tp_> &&
                      (std::is_copy_constructible_v<Args_> && ...)))
-    = delete("Option copy constructor is deleted because one or more alternative types are not copy-constructible");
+    = delete ("Option copy constructor is deleted because one or more "
+              "alternative types are not copy-constructible");
 
   public:
     constexpr Option(Option &&)
@@ -3439,7 +3445,8 @@ class alignas(
     constexpr Option(Option &&)
         requires(not(std::is_move_constructible_v<Tp_> &&
                      (std::is_move_constructible_v<Args_> && ...)))
-    = delete("Option move constructor is deleted because one or more alternative types are not move-constructible");
+    = delete ("Option move constructor is deleted because one or more "
+              "alternative types are not move-constructible");
 
   public:
     constexpr Option &operator=(const Option &)
@@ -3455,7 +3462,9 @@ class alignas(
                      (std::is_copy_constructible_v<Args_> && ...) &&
                      (std::is_copy_assignable_v<Tp_> &&
                       (std::is_copy_assignable_v<Args_> && ...))))
-    = delete("Option copy assignment operator is deleted because one or more alternative types are not copy-assignable or copy-constructible");
+    = delete (
+        "Option copy assignment operator is deleted because one or more "
+        "alternative types are not copy-assignable or copy-constructible");
 
   public:
     constexpr Option &operator=(Option &&)
@@ -3471,7 +3480,9 @@ class alignas(
                      (std::is_move_constructible_v<Args_> && ...) &&
                      (std::is_move_assignable_v<Tp_> &&
                       (std::is_move_assignable_v<Args_> && ...))))
-    = delete("Option move assignment operator is deleted because one or more alternative types are not move-assignable or move-constructible");
+    = delete (
+        "Option move assignment operator is deleted because one or more "
+        "alternative types are not move-assignable or move-constructible");
 
     static_assert(std::is_object_v<Tp_> && !std::is_array_v<Tp_>,
                   "Option<T> requires a non-array object type");
@@ -3492,7 +3503,7 @@ class alignas(
 
   private:
     template <typename Qp_>
-    constexpr auto get_type_name [[nodiscard]] (void) const & noexcept(true)
+    constexpr auto get_type_name [[nodiscard]](void) const & noexcept(true)
         -> std::string_view {
 #if RL_SUPPORTS_REFLECTION
         return std::meta::display_string_of(^^Qp_);
@@ -3609,185 +3620,220 @@ class alignas(
     template <typename Self_, typename Qp_, typename Up_>
         requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
                  std::is_constructible_v<std::remove_cvref_t<Up_>, Up_> &&
-                 details::__all_map_or_valid_<
-                     std::remove_cvref_t<Up_>,
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...> &&
+                 details::__all_map_or_valid_<std::remove_cvref_t<Up_>, Qp_,
+                                              ForwardLike_t<Self_, Tp_>,
+                                              ForwardLike_t<Self_, Args_>...> &&
                  (!std::is_invocable_v<Qp_, Opt::None> ||
                   details::__map_invocable_non_void_<Qp_, Opt::None>))
-    constexpr auto map_or_transform [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
-        -> std::remove_cvref_t<Up_>
-    {
+    constexpr auto map_or_transform
+        [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+            -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Rp_ {
-                auto out = static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val)));
-                if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
-                    self.reset();
-                }
-                return out;
-            },
-            None >>= [&]() -> Rp_ {
-                if constexpr (std::is_invocable_v<Qp_, Opt::None>) {
-                    return static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), Opt::None{}));
-                }
-                return static_cast<Rp_>(std::forward<Up_>(v_));
-            }
-        ).unwrap();
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Rp_ {
+                    auto out = static_cast<Rp_>(
+                        std::invoke(std::forward<Qp_>(op),
+                                    std::forward<decltype(val)>(val)));
+                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
+                        self.reset();
+                    }
+                    return out;
+                },
+                None >>= [&]() -> Rp_ {
+                    if constexpr (std::is_invocable_v<Qp_, Opt::None>) {
+                        return static_cast<Rp_>(
+                            std::invoke(std::forward<Qp_>(op), Opt::None{}));
+                    }
+                    return static_cast<Rp_>(std::forward<Up_>(v_));
+                })
+            .unwrap();
     }
 
   public:
     template <typename Target_, typename Self_, typename Qp_, typename Up_>
-        requires((std::same_as<Target_, Tp_> ||
-                  (std::same_as<Target_, Args_> || ...)) &&
-                 std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 std::is_constructible_v<std::remove_cvref_t<Up_>, Up_> &&
-                 details::__map_invocable_non_void_<Qp_, ForwardLike_t<Self_, Target_>> &&
-                 std::is_constructible_v<
-                     std::remove_cvref_t<Up_>,
-                     details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>> &&
-                 (!std::is_invocable_v<Qp_, Opt::None> ||
-                  details::__map_invocable_non_void_<Qp_, Opt::None>))
-    constexpr auto map_or_transform [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
-        -> std::remove_cvref_t<Up_>
-    {
+        requires(
+            (std::same_as<Target_, Tp_> ||
+             (std::same_as<Target_, Args_> || ...)) &&
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            std::is_constructible_v<std::remove_cvref_t<Up_>, Up_> &&
+            details::__map_invocable_non_void_<Qp_,
+                                               ForwardLike_t<Self_, Target_>> &&
+            std::is_constructible_v<std::remove_cvref_t<Up_>,
+                                    details::__map_single_result_t<
+                                        Qp_, ForwardLike_t<Self_, Target_>>> &&
+            (!std::is_invocable_v<Qp_, Opt::None> ||
+             details::__map_invocable_non_void_<Qp_, Opt::None>))
+    constexpr auto map_or_transform
+        [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+            -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Rp_ {
-                using Actual = std::remove_cvref_t<decltype(val)>;
-                if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val)));
-                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
-                        self.reset();
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Rp_ {
+                    using Actual = std::remove_cvref_t<decltype(val)>;
+                    if constexpr (std::same_as<Actual, Target_>) {
+                        auto out = static_cast<Rp_>(
+                            std::invoke(std::forward<Qp_>(op),
+                                        std::forward<decltype(val)>(val)));
+                        if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                      !std::is_const_v<
+                                          std::remove_reference_t<Self_>>) {
+                            self.reset();
+                        }
+                        return out;
+                    } else {
+                        return static_cast<Rp_>(std::forward<Up_>(v_));
                     }
-                    return out;
-                } else {
+                },
+                None >>= [&]() -> Rp_ {
+                    if constexpr (std::is_invocable_v<Qp_, Opt::None>) {
+                        return static_cast<Rp_>(
+                            std::invoke(std::forward<Qp_>(op), Opt::None{}));
+                    }
                     return static_cast<Rp_>(std::forward<Up_>(v_));
-                }
-            },
-            None >>= [&]() -> Rp_ {
-                if constexpr (std::is_invocable_v<Qp_, Opt::None>) {
-                    return static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), Opt::None{}));
-                }
-                return static_cast<Rp_>(std::forward<Up_>(v_));
-            }
-        ).unwrap();
+                })
+            .unwrap();
     }
 
   public:
     template <typename Self_, typename Qp_, typename FallbackFn_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__nullary_invoke_result_materializable_<FallbackFn_>::value &&
-                 details::__all_map_or_valid_<
-                     std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>,
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...>)
-    constexpr auto map_or_else [[nodiscard]] (this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
-        -> std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>
-    {
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__nullary_invoke_result_materializable_<
+                FallbackFn_>::value &&
+            details::__all_map_or_valid_<
+                std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>, Qp_,
+                ForwardLike_t<Self_, Tp_>, ForwardLike_t<Self_, Args_>...>)
+    constexpr auto map_or_else
+        [[nodiscard]](this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
+            -> std::remove_cvref_t<std::invoke_result_t<FallbackFn_>> {
         using Rp_ = std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>;
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Rp_ {
-                auto out = static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val)));
-                if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
-                    self.reset();
-                }
-                return out;
-            },
-            None >>= [&]() -> Rp_ {
-                return static_cast<Rp_>(std::invoke(std::forward<FallbackFn_>(f_)));
-            }
-        ).unwrap();
-    }
-
-  public:
-    template <typename Target_, typename Self_, typename Qp_, typename FallbackFn_>
-        requires((std::same_as<Target_, Tp_> ||
-                  (std::same_as<Target_, Args_> || ...)) &&
-                 std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__nullary_invoke_result_materializable_<FallbackFn_>::value &&
-                 details::__map_invocable_non_void_<Qp_, ForwardLike_t<Self_, Target_>> &&
-                 std::is_constructible_v<
-                     std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>,
-                     details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>>)
-    constexpr auto map_or_else [[nodiscard]] (this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
-        -> std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>
-    {
-        using Rp_ = std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>;
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Rp_ {
-                using Actual = std::remove_cvref_t<decltype(val)>;
-                if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val)));
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Rp_ {
+                    auto out = static_cast<Rp_>(
+                        std::invoke(std::forward<Qp_>(op),
+                                    std::forward<decltype(val)>(val)));
                     if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
                         self.reset();
                     }
                     return out;
-                } else {
-                    return static_cast<Rp_>(std::invoke(std::forward<FallbackFn_>(f_)));
-                }
-            },
-            None >>= [&]() -> Rp_ {
-                return static_cast<Rp_>(std::invoke(std::forward<FallbackFn_>(f_)));
-            }
-        ).unwrap();
+                },
+                None >>= [&]() -> Rp_ {
+                    return static_cast<Rp_>(
+                        std::invoke(std::forward<FallbackFn_>(f_)));
+                })
+            .unwrap();
+    }
+
+  public:
+    template <typename Target_, typename Self_, typename Qp_,
+              typename FallbackFn_>
+        requires(
+            (std::same_as<Target_, Tp_> ||
+             (std::same_as<Target_, Args_> || ...)) &&
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__nullary_invoke_result_materializable_<
+                FallbackFn_>::value &&
+            details::__map_invocable_non_void_<Qp_,
+                                               ForwardLike_t<Self_, Target_>> &&
+            std::is_constructible_v<
+                std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>,
+                details::__map_single_result_t<Qp_,
+                                               ForwardLike_t<Self_, Target_>>>)
+    constexpr auto map_or_else
+        [[nodiscard]](this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
+            -> std::remove_cvref_t<std::invoke_result_t<FallbackFn_>> {
+        using Rp_ = std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>;
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Rp_ {
+                    using Actual = std::remove_cvref_t<decltype(val)>;
+                    if constexpr (std::same_as<Actual, Target_>) {
+                        auto out = static_cast<Rp_>(
+                            std::invoke(std::forward<Qp_>(op),
+                                        std::forward<decltype(val)>(val)));
+                        if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                      !std::is_const_v<
+                                          std::remove_reference_t<Self_>>) {
+                            self.reset();
+                        }
+                        return out;
+                    } else {
+                        return static_cast<Rp_>(
+                            std::invoke(std::forward<FallbackFn_>(f_)));
+                    }
+                },
+                None >>= [&]() -> Rp_ {
+                    return static_cast<Rp_>(
+                        std::invoke(std::forward<FallbackFn_>(f_)));
+                })
+            .unwrap();
     }
 
   public:
     template <typename Self_, typename Qp_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 ((std::invocable<Qp_> &&
-                   (std::convertible_to<std::invoke_result_t<Qp_>, Tp_> ||
-                    std::constructible_from<Tp_, std::invoke_result_t<Qp_>>)) ||
-                  (std::invocable<Qp_, Opt::None> &&
-                   (std::convertible_to<std::invoke_result_t<Qp_, Opt::None>, Tp_> ||
-                    std::constructible_from<Tp_, std::invoke_result_t<Qp_, Opt::None>>))) &&
-                 (std::is_rvalue_reference_v<Self_ &&>
-                      ? std::is_move_constructible_v<Tp_>
-                      : std::is_copy_constructible_v<Tp_>))
-    constexpr auto unwrap_or_else [[nodiscard]] (this Self_ &&self, Qp_ &&op)
-        noexcept(std::is_rvalue_reference_v<Self_ &&>
-                     ? std::is_nothrow_move_constructible_v<Tp_>
-                     : std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Tp_ {
-                return static_cast<Tp_>(std::forward<decltype(val)>(val));
-            },
-            None >>= [&]() -> Tp_ {
-                if constexpr (std::invocable<Qp_>) {
-                    return static_cast<Tp_>(std::invoke(std::forward<Qp_>(op)));
-                } else {
-                    return static_cast<Tp_>(
-                        std::invoke(std::forward<Qp_>(op), Opt::None{}));
-                }
-            }
-        ).unwrap();
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            ((std::invocable<Qp_> &&
+              (std::convertible_to<std::invoke_result_t<Qp_>, Tp_> ||
+               std::constructible_from<Tp_, std::invoke_result_t<Qp_>>)) ||
+             (std::invocable<Qp_, Opt::None> &&
+              (std::convertible_to<std::invoke_result_t<Qp_, Opt::None>, Tp_> ||
+               std::constructible_from<
+                   Tp_, std::invoke_result_t<Qp_, Opt::None>>))) &&
+            (std::is_rvalue_reference_v<Self_ &&>
+                 ? std::is_move_constructible_v<Tp_>
+                 : std::is_copy_constructible_v<Tp_>))
+    constexpr auto unwrap_or_else
+        [[nodiscard]](this Self_ &&self, Qp_ &&op) noexcept(
+            std::is_rvalue_reference_v<Self_ &&>
+                ? std::is_nothrow_move_constructible_v<Tp_>
+                : std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_ {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Tp_ {
+                    return static_cast<Tp_>(std::forward<decltype(val)>(val));
+                },
+                None >>= [&]() -> Tp_ {
+                    if constexpr (std::invocable<Qp_>) {
+                        return static_cast<Tp_>(
+                            std::invoke(std::forward<Qp_>(op)));
+                    } else {
+                        return static_cast<Tp_>(
+                            std::invoke(std::forward<Qp_>(op), Opt::None{}));
+                    }
+                })
+            .unwrap();
     }
 
   public:
     template <typename Self_, typename Qp_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 (std::is_constructible_v<Tp_, ForwardLike_t<Self_, Tp_>> &&
-                  (std::is_constructible_v<Args_, ForwardLike_t<Self_, Args_>> && ...)) &&
-                 ((std::invocable<Qp_> &&
-                   std::convertible_to<std::invoke_result_t<Qp_>, Option>) ||
-                  (std::invocable<Qp_, Opt::None> &&
-                   std::convertible_to<std::invoke_result_t<Qp_, Opt::None>, Option>)))
-    constexpr auto or_else [[nodiscard]] (this Self_ &&self, Qp_ &&op) -> Option
-    {
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            (std::is_constructible_v<Tp_, ForwardLike_t<Self_, Tp_>> &&
+             (std::is_constructible_v<Args_, ForwardLike_t<Self_, Args_>> &&
+              ...)) &&
+            ((std::invocable<Qp_> &&
+              std::convertible_to<std::invoke_result_t<Qp_>, Option>) ||
+             (std::invocable<Qp_, Opt::None> &&
+              std::convertible_to<std::invoke_result_t<Qp_, Opt::None>,
+                                  Option>)))
+    constexpr auto or_else [[nodiscard]](this Self_ &&self, Qp_ &&op)
+        -> Option {
         return std::forward<Self_>(self).match(
             SomeAny >>= [&](auto &&val) -> Option {
                 using Actual_ = std::remove_cvref_t<decltype(val)>;
-                auto res = Option(Opt::Some<Actual_>(std::forward<decltype(val)>(val)));
+                auto res = Option(
+                    Opt::Some<Actual_>(std::forward<decltype(val)>(val)));
                 if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
+                              !std::is_const_v<
+                                  std::remove_reference_t<Self_>>) {
                     self.reset();
                 }
                 return res;
@@ -3798,39 +3844,34 @@ class alignas(
                 } else {
                     return std::invoke(std::forward<Qp_>(op), Opt::None{});
                 }
-            }
-        );
+            });
     }
 
   public:
     template <typename Self_, typename Qp_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__all_mappable_alternatives_<
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...>)
-    constexpr auto map [[nodiscard]] (this Self_ &&self, Qp_ &&op)
-    {
-        using ResultOption = details::__map_option_return_type_t<
-            Qp_,
-            ForwardLike_t<Self_, Tp_>,
-            ForwardLike_t<Self_, Args_>...>;
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__all_mappable_alternatives_<
+                Qp_, ForwardLike_t<Self_, Tp_>, ForwardLike_t<Self_, Args_>...>)
+    constexpr auto map [[nodiscard]](this Self_ &&self, Qp_ &&op) {
+        using ResultOption =
+            details::__map_option_return_type_t<Qp_, ForwardLike_t<Self_, Tp_>,
+                                                ForwardLike_t<Self_, Args_>...>;
 
         return std::forward<Self_>(self).match(
             SomeAny >>= [&](auto &&val) -> ResultOption {
                 using Arg_ = decltype(val);
                 using Res_ = details::__map_single_result_t<Qp_, Arg_>;
-                auto out = std::invoke(std::forward<Qp_>(op), std::forward<Arg_>(val));
+                auto out =
+                    std::invoke(std::forward<Qp_>(op), std::forward<Arg_>(val));
                 if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
+                              !std::is_const_v<
+                                  std::remove_reference_t<Self_>>) {
                     self.reset();
                 }
                 return ResultOption(Opt::Some<Res_>(std::move(out)));
             },
-            None >>= []() -> ResultOption {
-                return ResultOption(None);
-            }
-        );
+            None >>= []() -> ResultOption { return ResultOption(None); });
     }
 
   public:
@@ -3838,20 +3879,24 @@ class alignas(
         requires((std::same_as<Target_, Tp_> ||
                   (std::same_as<Target_, Args_> || ...)) &&
                  std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__map_invocable_non_void_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto map [[nodiscard]] (this Self_ &&self, Qp_ &&op)
-        -> Opt::Option<details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>>
-    {
-        using Res_ = details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>;
+                 details::__map_invocable_non_void_<
+                     Qp_, ForwardLike_t<Self_, Target_>>)
+    constexpr auto
+    map [[nodiscard]](this Self_ &&self, Qp_ &&op) -> Opt::Option<
+        details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>> {
+        using Res_ =
+            details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>;
         using ResultOption = Opt::Option<Res_>;
 
         return std::forward<Self_>(self).match(
             SomeAny >>= [&](auto &&val) -> ResultOption {
                 using Actual = std::remove_cvref_t<decltype(val)>;
                 if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val));
+                    auto out = std::invoke(std::forward<Qp_>(op),
+                                           std::forward<decltype(val)>(val));
                     if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
                         self.reset();
                     }
                     return ResultOption(Opt::Some<Res_>(std::move(out)));
@@ -3859,72 +3904,75 @@ class alignas(
                     return ResultOption(None);
                 }
             },
-            None >>= []() -> ResultOption {
-                return ResultOption(None);
-            }
-        );
+            None >>= []() -> ResultOption { return ResultOption(None); });
     }
 
   public:
     template <typename Self_, typename Qp_, typename Up_>
         requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
                  std::is_constructible_v<std::remove_cvref_t<Up_>, Up_> &&
-                 details::__all_map_or_valid_<
-                     std::remove_cvref_t<Up_>,
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...>)
-    constexpr auto map_or [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
-        -> std::remove_cvref_t<Up_>
-    {
+                 details::__all_map_or_valid_<std::remove_cvref_t<Up_>, Qp_,
+                                              ForwardLike_t<Self_, Tp_>,
+                                              ForwardLike_t<Self_, Args_>...>)
+    constexpr auto map_or [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+        -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Rp_ {
-                auto out = static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val)));
-                if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
-                    self.reset();
-                }
-                return out;
-            },
-            None >>= [&]() -> Rp_ {
-                return static_cast<Rp_>(std::forward<Up_>(v_));
-            }
-        ).unwrap();
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Rp_ {
+                    auto out = static_cast<Rp_>(
+                        std::invoke(std::forward<Qp_>(op),
+                                    std::forward<decltype(val)>(val)));
+                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
+                        self.reset();
+                    }
+                    return out;
+                },
+                None >>= [&]() -> Rp_ {
+                    return static_cast<Rp_>(std::forward<Up_>(v_));
+                })
+            .unwrap();
     }
 
   public:
     template <typename Target_, typename Self_, typename Qp_, typename Up_>
-        requires((std::same_as<Target_, Tp_> ||
-                  (std::same_as<Target_, Args_> || ...)) &&
-                 std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 std::is_constructible_v<std::remove_cvref_t<Up_>, Up_> &&
-                 details::__map_invocable_non_void_<Qp_, ForwardLike_t<Self_, Target_>> &&
-                 std::is_constructible_v<
-                     std::remove_cvref_t<Up_>,
-                     details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>>)
-    constexpr auto map_or [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
-        -> std::remove_cvref_t<Up_>
-    {
+        requires(
+            (std::same_as<Target_, Tp_> ||
+             (std::same_as<Target_, Args_> || ...)) &&
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            std::is_constructible_v<std::remove_cvref_t<Up_>, Up_> &&
+            details::__map_invocable_non_void_<Qp_,
+                                               ForwardLike_t<Self_, Target_>> &&
+            std::is_constructible_v<std::remove_cvref_t<Up_>,
+                                    details::__map_single_result_t<
+                                        Qp_, ForwardLike_t<Self_, Target_>>>)
+    constexpr auto map_or [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+        -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> Rp_ {
-                using Actual = std::remove_cvref_t<decltype(val)>;
-                if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = static_cast<Rp_>(std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val)));
-                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
-                        self.reset();
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> Rp_ {
+                    using Actual = std::remove_cvref_t<decltype(val)>;
+                    if constexpr (std::same_as<Actual, Target_>) {
+                        auto out = static_cast<Rp_>(
+                            std::invoke(std::forward<Qp_>(op),
+                                        std::forward<decltype(val)>(val)));
+                        if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                      !std::is_const_v<
+                                          std::remove_reference_t<Self_>>) {
+                            self.reset();
+                        }
+                        return out;
+                    } else {
+                        return static_cast<Rp_>(std::forward<Up_>(v_));
                     }
-                    return out;
-                } else {
+                },
+                None >>= [&]() -> Rp_ {
                     return static_cast<Rp_>(std::forward<Up_>(v_));
-                }
-            },
-            None >>= [&]() -> Rp_ {
-                return static_cast<Rp_>(std::forward<Up_>(v_));
-            }
-        ).unwrap();
+                })
+            .unwrap();
     }
 
   public:
@@ -3953,23 +4001,22 @@ class alignas(
 
   public:
     template <typename Self_, typename Qp_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__all_and_then_alternatives_<
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...>)
-    constexpr auto and_then [[nodiscard]] (this Self_ &&self, Qp_ &&op)
-    {
-        using ResultOption = details::__and_then_return_type_t<
-            Qp_,
-            ForwardLike_t<Self_, Tp_>,
-            ForwardLike_t<Self_, Args_>...>;
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__all_and_then_alternatives_<
+                Qp_, ForwardLike_t<Self_, Tp_>, ForwardLike_t<Self_, Args_>...>)
+    constexpr auto and_then [[nodiscard]](this Self_ &&self, Qp_ &&op) {
+        using ResultOption =
+            details::__and_then_return_type_t<Qp_, ForwardLike_t<Self_, Tp_>,
+                                              ForwardLike_t<Self_, Args_>...>;
 
         return std::forward<Self_>(self).match(
             SomeAny >>= [&](auto &&val) -> ResultOption {
-                auto res = std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val));
+                auto res = std::invoke(std::forward<Qp_>(op),
+                                       std::forward<decltype(val)>(val));
                 if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
+                              !std::is_const_v<
+                                  std::remove_reference_t<Self_>>) {
                     self.reset();
                 }
                 using ResOpt_ = std::remove_cvref_t<decltype(res)>;
@@ -3978,39 +4025,38 @@ class alignas(
                 } else {
                     return std::move(res).match(
                         SomeAny >>= [](auto &&inner_val) -> ResultOption {
-                            return ResultOption(Opt::Some(std::forward<decltype(inner_val)>(inner_val)));
+                            return ResultOption(Opt::Some(
+                                std::forward<decltype(inner_val)>(inner_val)));
                         },
-                        None >>= []() -> ResultOption {
-                            return ResultOption(None);
-                        }
-                    );
+                        None >>=
+                        []() -> ResultOption { return ResultOption(None); });
                 }
             },
-            None >>= []() -> ResultOption {
-                return ResultOption(None);
-            }
-        );
+            None >>= []() -> ResultOption { return ResultOption(None); });
     }
 
   public:
     template <typename Target_, typename Self_, typename Qp_>
-        requires((std::same_as<Target_, Tp_> ||
-                  (std::same_as<Target_, Args_> || ...)) &&
-                 std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__and_then_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto and_then [[nodiscard]] (this Self_ &&self, Qp_ &&op)
-        -> std::remove_cvref_t<std::invoke_result_t<Qp_, ForwardLike_t<Self_, Target_>>>
-    {
-        using ResultOption =
-            std::remove_cvref_t<std::invoke_result_t<Qp_, ForwardLike_t<Self_, Target_>>>;
+        requires(
+            (std::same_as<Target_, Tp_> ||
+             (std::same_as<Target_, Args_> || ...)) &&
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__and_then_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
+    constexpr auto and_then [[nodiscard]](this Self_ &&self, Qp_ &&op)
+        -> std::remove_cvref_t<
+            std::invoke_result_t<Qp_, ForwardLike_t<Self_, Target_>>> {
+        using ResultOption = std::remove_cvref_t<
+            std::invoke_result_t<Qp_, ForwardLike_t<Self_, Target_>>>;
 
         return std::forward<Self_>(self).match(
             SomeAny >>= [&](auto &&val) -> ResultOption {
                 using Actual = std::remove_cvref_t<decltype(val)>;
                 if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = std::invoke(std::forward<Qp_>(op), std::forward<decltype(val)>(val));
+                    auto out = std::invoke(std::forward<Qp_>(op),
+                                           std::forward<decltype(val)>(val));
                     if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
                         self.reset();
                     }
                     return out;
@@ -4018,19 +4064,15 @@ class alignas(
                     return ResultOption(None);
                 }
             },
-            None >>= []() -> ResultOption {
-                return ResultOption(None);
-            }
-        );
+            None >>= []() -> ResultOption { return ResultOption(None); });
     }
 
   public:
     template <typename... Rp_, typename Self_, typename... Arms_>
-    constexpr auto match [[nodiscard]] (this Self_ &&self, Arms_ &&...arms)
+    constexpr auto match [[nodiscard]](this Self_ &&self, Arms_ &&...arms)
         requires(sizeof...(Arms_) > 0 &&
-                 details::match_is_exhaustive_<
-                     std::tuple<Tp_, Args_...>,
-                     std::tuple<Arms_...>>::value &&
+                 details::match_is_exhaustive_<std::tuple<Tp_, Args_...>,
+                                               std::tuple<Arms_...>>::value &&
                  ((sizeof...(Rp_) == 0 &&
                    details::__match_inferred_results_convertible_<
                        std::tuple<ForwardLike_t<Self_, Tp_>,
@@ -4039,9 +4081,9 @@ class alignas(
                   (sizeof...(Rp_) == 1 &&
                    ((std::same_as<Rp_, void> || ...) ||
                     !details::__match_return_types_are_consistent_<
-                         std::tuple<ForwardLike_t<Self_, Tp_>,
-                                    ForwardLike_t<Self_, Args_>...>,
-                         std::tuple<Arms_...>>::has_void)) ||
+                        std::tuple<ForwardLike_t<Self_, Tp_>,
+                                   ForwardLike_t<Self_, Args_>...>,
+                        std::tuple<Arms_...>>::has_void)) ||
                   (sizeof...(Rp_) > 1 &&
                    !details::__match_return_types_are_consistent_<
                        std::tuple<ForwardLike_t<Self_, Tp_>,
@@ -4110,7 +4152,7 @@ class alignas(
 
   public:
     constexpr auto expect
-        [[nodiscard]] (std::string_view msg) const &[[RL_LIFETIME_BOUND]]
+        [[nodiscard]](std::string_view msg) const &[[RL_LIFETIME_BOUND]]
         -> const Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::expect() failed: {}",
@@ -4122,7 +4164,7 @@ class alignas(
 
   public:
     constexpr auto expect
-        [[nodiscard]] (std::string_view msg) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
+        [[nodiscard]](std::string_view msg) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::expect() failed: {}",
                             this->template get_type_name<Tp_>(), msg);
@@ -4132,7 +4174,7 @@ class alignas(
     }
 
   public:
-    constexpr auto expect [[nodiscard]] (std::string_view msg) && -> Tp_
+    constexpr auto expect [[nodiscard]](std::string_view msg) && -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4144,7 +4186,7 @@ class alignas(
     }
 
   public:
-    constexpr auto expect [[nodiscard]] (std::string_view msg) const && -> Tp_
+    constexpr auto expect [[nodiscard]](std::string_view msg) const && -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4156,7 +4198,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]] (void) const &[[RL_LIFETIME_BOUND]]
+    constexpr auto unwrap [[nodiscard]](void) const &[[RL_LIFETIME_BOUND]]
     -> const Tp_ & {
         if (!this->has_primary_()) {
             details::panic_(
@@ -4168,7 +4210,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]] (void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
+    constexpr auto unwrap [[nodiscard]](void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
         if (!this->has_primary_()) {
             details::panic_(
                 "Option<{}>::unwrap() failed: Option does not wield any value.",
@@ -4179,7 +4221,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]] (void) && -> Tp_
+    constexpr auto unwrap [[nodiscard]](void) && -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4192,7 +4234,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]] (void) const && -> Tp_
+    constexpr auto unwrap [[nodiscard]](void) const && -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4203,9 +4245,10 @@ class alignas(
 
         return this->primary_value_();
     }
+
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]] (void) const &[[RL_LIFETIME_BOUND]]
+    constexpr auto unwrap [[nodiscard]](void) const &[[RL_LIFETIME_BOUND]]
     -> const Qp_ &
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
@@ -4221,7 +4264,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]] (void) &[[RL_LIFETIME_BOUND]] -> Qp_ &
+    constexpr auto unwrap [[nodiscard]](void) &[[RL_LIFETIME_BOUND]] -> Qp_ &
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
         if (!this->template has_type_<Qp_>()) {
@@ -4236,7 +4279,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]] (void) && -> Qp_
+    constexpr auto unwrap [[nodiscard]](void) && -> Qp_
         requires((std::same_as<Qp_, Tp_> ||
                   (std::same_as<Qp_, Args_> || ...)) &&
                  std::is_move_constructible_v<Qp_>)
@@ -4291,7 +4334,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]] (void) const && -> Qp_
+    constexpr auto unwrap [[nodiscard]](void) const && -> Qp_
         requires((std::same_as<Qp_, Tp_> ||
                   (std::same_as<Qp_, Args_> || ...)) &&
                  std::is_copy_constructible_v<Qp_>)
@@ -4307,7 +4350,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]] (void) const &[[RL_LIFETIME_BOUND]]
+    constexpr auto value [[nodiscard]](void) const &[[RL_LIFETIME_BOUND]]
     -> const Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
@@ -4319,7 +4362,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]] (void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
+    constexpr auto value [[nodiscard]](void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
                             "does not hold a value!",
@@ -4330,8 +4373,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]] (void) &&[[RL_LIFETIME_BOUND]]
-    -> Tp_ && {
+    constexpr auto value [[nodiscard]](void) &&[[RL_LIFETIME_BOUND]] -> Tp_ && {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
                             "does not hold a value!",
@@ -4342,7 +4384,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]] (void) const &&[[RL_LIFETIME_BOUND]]
+    constexpr auto value [[nodiscard]](void) const &&[[RL_LIFETIME_BOUND]]
     -> const Tp_ && {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
@@ -4354,7 +4396,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]] (void) const & -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]](void) const & -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4365,7 +4407,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]] (void) & -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]](void) & -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4376,7 +4418,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]] (void) && -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]](void) && -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4387,7 +4429,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]] (void) const && -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]](void) const && -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4402,7 +4444,7 @@ class alignas(
 
   private:
     template <typename Fn_>
-    constexpr auto consume_unchecked [[nodiscard]] (Fn_ &&fn) & noexcept(
+    constexpr auto consume_unchecked [[nodiscard]](Fn_ &&fn) & noexcept(
         std::is_nothrow_invocable_v<Fn_, Tp_ &&>)
         -> std::invoke_result_t<Fn_, Tp_ &&>
         requires(std::invocable<Fn_, Tp_ &&> &&
@@ -4423,7 +4465,7 @@ class alignas(
     // Extract by value. If the move throws, the Option stays
     // engaged.
   private:
-    constexpr auto take_unchecked [[nodiscard]] (void) & noexcept(
+    constexpr auto take_unchecked [[nodiscard]](void) & noexcept(
         std::is_nothrow_move_constructible_v<Tp_>) -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
@@ -4476,7 +4518,7 @@ class alignas(
 #pragma clang diagnostic ignored "-Wlifetime-safety-lifetimebound-violation"
 #endif
   public:
-    constexpr auto as_mut_ptr [[nodiscard]] (void) & noexcept(true)
+    constexpr auto as_mut_ptr [[nodiscard]](void) & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<Tp_ *> {
         if (!this->has_primary_()) {
             return Opt::None();
@@ -4493,7 +4535,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto as_mut_ptr [[nodiscard]] (void) & noexcept(true)
+    constexpr auto as_mut_ptr [[nodiscard]](void) & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<Qp_ *>
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
@@ -4511,7 +4553,7 @@ class alignas(
     template <typename Qp_> constexpr auto as_mut_ptr(void) const && = delete;
 
   public:
-    constexpr auto as_immut_ptr [[nodiscard]] (void) const & noexcept(true)
+    constexpr auto as_immut_ptr [[nodiscard]](void) const & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<const Tp_ *> {
         if (!this->has_primary_()) {
             return Opt::None();
@@ -4528,7 +4570,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto as_immut_ptr [[nodiscard]] (void) const & noexcept(true)
+    constexpr auto as_immut_ptr [[nodiscard]](void) const & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<const Qp_ *>
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
@@ -4551,7 +4593,7 @@ class alignas(
 #endif
 
   public:
-    constexpr auto take [[nodiscard]] (void) & noexcept(
+    constexpr auto take [[nodiscard]](void) & noexcept(
         std::is_nothrow_move_constructible_v<Tp_> &&
         (std::is_nothrow_move_constructible_v<Args_> && ...))
         -> Option<Tp_, Args_...>
@@ -4571,7 +4613,7 @@ class alignas(
 
   public:
     template <typename Up_>
-    constexpr auto replace [[nodiscard]] (Up_ &&new_val) & noexcept(
+    constexpr auto replace [[nodiscard]](Up_ &&new_val) & noexcept(
         std::is_nothrow_move_constructible_v<Tp_> &&
         (std::is_nothrow_move_constructible_v<Args_> && ...) &&
         std::is_nothrow_constructible_v<
@@ -4597,23 +4639,23 @@ class alignas(
     template <typename Up_> constexpr auto replace(Up_ &&) const && = delete;
 
   public:
-    constexpr auto is_none [[nodiscard]] (void) const noexcept(true) -> bool {
+    constexpr auto is_none [[nodiscard]](void) const noexcept(true) -> bool {
         return (this->active_index_() == 0);
     }
 
   public:
-    constexpr auto is_some [[nodiscard]] (void) const noexcept(true) -> bool {
+    constexpr auto is_some [[nodiscard]](void) const noexcept(true) -> bool {
         return (this->active_index_() != 0);
     }
 
   public:
     template <typename Qp_>
-    constexpr auto is_some [[nodiscard]] (void) const noexcept(true) -> bool {
+    constexpr auto is_some [[nodiscard]](void) const noexcept(true) -> bool {
         return this->template has_type_<Qp_>();
     }
 
   public:
-    constexpr auto is_default [[nodiscard]] (void) const
+    constexpr auto is_default [[nodiscard]](void) const
         noexcept(std::is_nothrow_default_constructible_v<Tp_> &&
                  noexcept(std::declval<const Tp_ &>() ==
                           std::declval<const Tp_ &>())) -> bool
@@ -4621,21 +4663,21 @@ class alignas(
                  std::equality_comparable<Tp_>)
     {
         return match(
-            SomeAny >>= [](auto const &val) -> bool {
-                using Actual_ = std::remove_cvref_t<decltype(val)>;
-                if constexpr (std::same_as<Actual_, Tp_>) {
-                    const Tp_ def_{};
-                    return val == def_;
-                } else {
-                    return false;
-                }
-            },
-            None >>= []() -> bool { return false; }
-        ).unwrap();
+                   SomeAny >>= [](auto const &val) -> bool {
+                       using Actual_ = std::remove_cvref_t<decltype(val)>;
+                       if constexpr (std::same_as<Actual_, Tp_>) {
+                           const Tp_ def_{};
+                           return val == def_;
+                       } else {
+                           return false;
+                       }
+                   },
+                   None >>= []() -> bool { return false; })
+            .unwrap();
     }
 
   public:
-    constexpr auto is_default [[nodiscard]] (void) const noexcept(
+    constexpr auto is_default [[nodiscard]](void) const noexcept(
         std::is_nothrow_default_constructible_v<default_alternative_type_> &&
         noexcept(std::declval<const default_alternative_type_ &>() ==
                  std::declval<const default_alternative_type_ &>())) -> bool
@@ -4652,110 +4694,120 @@ class alignas(
 
   public:
     template <typename Self_, typename Qp_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__all_predicate_invocable_<
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...>)
-    constexpr auto is_some_and [[nodiscard]] (this Self_ &&self, Qp_ &&prop_)
-        noexcept((std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Tp_>> &&
-                  (std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Args_>> && ...))) -> bool
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> bool {
-                auto out = static_cast<bool>(std::invoke(std::forward<Qp_>(prop_), std::forward<decltype(val)>(val)));
-                if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
-                    self.reset();
-                }
-                return out;
-            },
-            None >>= []() -> bool {
-                return false;
-            }
-        ).unwrap();
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__all_predicate_invocable_<Qp_, ForwardLike_t<Self_, Tp_>,
+                                                ForwardLike_t<Self_, Args_>...>)
+    constexpr auto
+    is_some_and [[nodiscard]](this Self_ &&self, Qp_ &&prop_) noexcept((
+        std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Tp_>> &&
+        (std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Args_>> && ...)))
+        -> bool {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> bool {
+                    auto out = static_cast<bool>(
+                        std::invoke(std::forward<Qp_>(prop_),
+                                    std::forward<decltype(val)>(val)));
+                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
+                        self.reset();
+                    }
+                    return out;
+                },
+                None >>= []() -> bool { return false; })
+            .unwrap();
     }
 
   public:
     template <typename Target_, typename Self_, typename Qp_>
-        requires((std::same_as<Target_, Tp_> ||
-                  (std::same_as<Target_, Args_> || ...)) &&
-                 std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__predicate_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto is_some_and [[nodiscard]] (this Self_ &&self, Qp_ &&prop_) -> bool
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> bool {
-                using Actual = std::remove_cvref_t<decltype(val)>;
-                if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = static_cast<bool>(std::invoke(std::forward<Qp_>(prop_), std::forward<decltype(val)>(val)));
-                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
-                        self.reset();
+        requires(
+            (std::same_as<Target_, Tp_> ||
+             (std::same_as<Target_, Args_> || ...)) &&
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__predicate_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
+    constexpr auto is_some_and [[nodiscard]](this Self_ &&self, Qp_ &&prop_)
+        -> bool {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> bool {
+                    using Actual = std::remove_cvref_t<decltype(val)>;
+                    if constexpr (std::same_as<Actual, Target_>) {
+                        auto out = static_cast<bool>(
+                            std::invoke(std::forward<Qp_>(prop_),
+                                        std::forward<decltype(val)>(val)));
+                        if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                      !std::is_const_v<
+                                          std::remove_reference_t<Self_>>) {
+                            self.reset();
+                        }
+                        return out;
+                    } else {
+                        return false;
                     }
-                    return out;
-                } else {
-                    return false;
-                }
-            },
-            None >>= []() -> bool {
-                return false;
-            }
-        ).unwrap();
+                },
+                None >>= []() -> bool { return false; })
+            .unwrap();
     }
 
   public:
     template <typename Self_, typename Qp_>
-        requires(std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__all_predicate_invocable_<
-                     Qp_,
-                     ForwardLike_t<Self_, Tp_>,
-                     ForwardLike_t<Self_, Args_>...>)
-    constexpr auto is_none_or [[nodiscard]] (this Self_ &&self, Qp_ &&prop_)
-        noexcept((std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Tp_>> &&
-                  (std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Args_>> && ...))) -> bool
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> bool {
-                auto out = static_cast<bool>(std::invoke(std::forward<Qp_>(prop_), std::forward<decltype(val)>(val)));
-                if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                              !std::is_const_v<std::remove_reference_t<Self_>>) {
-                    self.reset();
-                }
-                return out;
-            },
-            None >>= []() -> bool {
-                return true;
-            }
-        ).unwrap();
+        requires(
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__all_predicate_invocable_<Qp_, ForwardLike_t<Self_, Tp_>,
+                                                ForwardLike_t<Self_, Args_>...>)
+    constexpr auto
+    is_none_or [[nodiscard]](this Self_ &&self, Qp_ &&prop_) noexcept((
+        std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Tp_>> &&
+        (std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Args_>> && ...)))
+        -> bool {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> bool {
+                    auto out = static_cast<bool>(
+                        std::invoke(std::forward<Qp_>(prop_),
+                                    std::forward<decltype(val)>(val)));
+                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                  !std::is_const_v<
+                                      std::remove_reference_t<Self_>>) {
+                        self.reset();
+                    }
+                    return out;
+                },
+                None >>= []() -> bool { return true; })
+            .unwrap();
     }
 
   public:
     template <typename Target_, typename Self_, typename Qp_>
-        requires((std::same_as<Target_, Tp_> ||
-                  (std::same_as<Target_, Args_> || ...)) &&
-                 std::same_as<std::remove_cvref_t<Self_>, Option> &&
-                 details::__predicate_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto is_none_or [[nodiscard]] (this Self_ &&self, Qp_ &&prop_) -> bool
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [&](auto &&val) -> bool {
-                using Actual = std::remove_cvref_t<decltype(val)>;
-                if constexpr (std::same_as<Actual, Target_>) {
-                    auto out = static_cast<bool>(std::invoke(std::forward<Qp_>(prop_), std::forward<decltype(val)>(val)));
-                    if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
-                                  !std::is_const_v<std::remove_reference_t<Self_>>) {
-                        self.reset();
+        requires(
+            (std::same_as<Target_, Tp_> ||
+             (std::same_as<Target_, Args_> || ...)) &&
+            std::same_as<std::remove_cvref_t<Self_>, Option> &&
+            details::__predicate_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
+    constexpr auto is_none_or [[nodiscard]](this Self_ &&self, Qp_ &&prop_)
+        -> bool {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [&](auto &&val) -> bool {
+                    using Actual = std::remove_cvref_t<decltype(val)>;
+                    if constexpr (std::same_as<Actual, Target_>) {
+                        auto out = static_cast<bool>(
+                            std::invoke(std::forward<Qp_>(prop_),
+                                        std::forward<decltype(val)>(val)));
+                        if constexpr (std::is_rvalue_reference_v<Self_ &&> &&
+                                      !std::is_const_v<
+                                          std::remove_reference_t<Self_>>) {
+                            self.reset();
+                        }
+                        return out;
+                    } else {
+                        return true;
                     }
-                    return out;
-                } else {
-                    return true;
-                }
-            },
-            None >>= []() -> bool {
-                return true;
-            }
-        ).unwrap();
+                },
+                None >>= []() -> bool { return true; })
+            .unwrap();
     }
 
   public:
@@ -4765,25 +4817,26 @@ class alignas(
                  (std::is_rvalue_reference_v<Self_ &&>
                       ? std::is_move_constructible_v<Tp_>
                       : std::is_copy_constructible_v<Tp_>))
-    constexpr auto unwrap_or [[nodiscard]] (this Self_ &&self, Qp_ &&v_)
-        noexcept(std::is_rvalue_reference_v<Self_ &&>
-                     ? (std::is_nothrow_move_constructible_v<Tp_> &&
-                        std::is_nothrow_constructible_v<Tp_, Qp_>)
-                     : (std::is_nothrow_copy_constructible_v<Tp_> &&
-                        std::is_nothrow_constructible_v<Tp_, Qp_>)) -> Tp_
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [](auto &&val) -> Tp_ {
-                return static_cast<Tp_>(std::forward<decltype(val)>(val));
-            },
-            None >>= [&]() -> Tp_ {
-                return static_cast<Tp_>(std::forward<Qp_>(v_));
-            }
-        ).unwrap();
+    constexpr auto unwrap_or
+        [[nodiscard]](this Self_ &&self, Qp_ &&v_) noexcept(
+            std::is_rvalue_reference_v<Self_ &&>
+                ? (std::is_nothrow_move_constructible_v<Tp_> &&
+                   std::is_nothrow_constructible_v<Tp_, Qp_>)
+                : (std::is_nothrow_copy_constructible_v<Tp_> &&
+                   std::is_nothrow_constructible_v<Tp_, Qp_>)) -> Tp_ {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [](auto &&val) -> Tp_ {
+                    return static_cast<Tp_>(std::forward<decltype(val)>(val));
+                },
+                None >>= [&]() -> Tp_ {
+                    return static_cast<Tp_>(std::forward<Qp_>(v_));
+                })
+            .unwrap();
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]] (void) const & noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]](void) const & noexcept(
         std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
@@ -4792,7 +4845,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]] (void) & noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]](void) & noexcept(
         std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
@@ -4800,7 +4853,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]] (void) && noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]](void) && noexcept(
         std::is_nothrow_move_constructible_v<Tp_>) -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
@@ -4808,7 +4861,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]] (void) const && noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]](void) const && noexcept(
         std::is_nothrow_constructible_v<Tp_, const Tp_ &&>) -> Tp_
         requires(std::is_constructible_v<Tp_, const Tp_ &&>)
     {
@@ -4823,18 +4876,18 @@ class alignas(
                  (std::is_rvalue_reference_v<Self_ &&>
                       ? std::is_move_constructible_v<Tp_>
                       : std::is_copy_constructible_v<Tp_>))
-    constexpr auto unwrap_or_default [[nodiscard]] (this Self_ &&self)
-        noexcept(std::is_nothrow_default_constructible_v<Tp_> &&
-                 (std::is_rvalue_reference_v<Self_ &&>
-                      ? std::is_nothrow_move_constructible_v<Tp_>
-                      : std::is_nothrow_copy_constructible_v<Tp_>)) -> Tp_
-    {
-        return std::forward<Self_>(self).match(
-            SomeAny >>= [](auto &&val) -> Tp_ {
-                return static_cast<Tp_>(std::forward<decltype(val)>(val));
-            },
-            None >>= []() -> Tp_ { return Tp_{}; }
-        ).unwrap();
+    constexpr auto unwrap_or_default [[nodiscard]](this Self_ &&self) noexcept(
+        std::is_nothrow_default_constructible_v<Tp_> &&
+        (std::is_rvalue_reference_v<Self_ &&>
+             ? std::is_nothrow_move_constructible_v<Tp_>
+             : std::is_nothrow_copy_constructible_v<Tp_>)) -> Tp_ {
+        return std::forward<Self_>(self)
+            .match(
+                SomeAny >>= [](auto &&val) -> Tp_ {
+                    return static_cast<Tp_>(std::forward<decltype(val)>(val));
+                },
+                None >>= []() -> Tp_ { return Tp_{}; })
+            .unwrap();
     }
 
   public:
@@ -5250,14 +5303,16 @@ class alignas(
                                                      std::decay_t<Up_> &&>) {
             // Target is non-movable; stage the argument if possible so reading
             // from references into the old alternative succeeds before
-            // reset_(). Preserve an rvalue conversion when the target accepts it.
+            // reset_(). Preserve an rvalue conversion when the target accepts
+            // it.
             std::decay_t<Up_> staged_val_(std::forward<Up_>(val_));
             this->data.template emplace_<Target_>(std::move(staged_val_));
         } else if constexpr (std::is_constructible_v<std::decay_t<Up_>, Up_> &&
                              std::is_constructible_v<Target_,
                                                      std::decay_t<Up_> &>) {
             // Some non-movable targets accept only an lvalue source. Build a
-            // stable copy before reset_(), then pass that staged object by lvalue.
+            // stable copy before reset_(), then pass that staged object by
+            // lvalue.
             std::decay_t<Up_> staged_val_(std::forward<Up_>(val_));
             this->data.template emplace_<Target_>(staged_val_);
         } else {
@@ -5572,8 +5627,8 @@ struct option_hash_base_<std::tuple<Tp_, Args_...>, true> {
 namespace rl {
 
 /**
- * @brief Class `Option<Tp_, Ts...>` template instantiation which accepts `T` type
- * or `None`.
+ * @brief Class `Option<Tp_, Ts...>` template instantiation which accepts `T`
+ * type or `None`.
  */
 
 using details::Opt::Option;
@@ -5585,51 +5640,56 @@ using details::Opt::Option;
 using details::Opt::Some;
 
 /**
- * @brief Class `None` which accepts nothing. Tag to disengage optional objects regardless
- * of any invariants of types is default constructible. The internal layout secretly takes
- * `Option<None, Tp_, Ts...>` for the disengage optional object for nullstate.
+ * @brief Class `None` which accepts nothing. Tag to disengage optional objects
+ * regardless of any invariants of types is default constructible. The internal
+ * layout secretly takes `Option<None, Tp_, Ts...>` for the disengage optional
+ * object for nullstate.
  */
 inline constexpr auto None{details::Opt::None{}};
 
 /**
- * @brief Class `Default` which constructs a default value if possible from `Option<T, Ts...>`
- * regardless of any Type alternatives that are non-constructible.
- * If a non-constructible type is found and checked during compile time, it automatically
- * ignores the index and looks at the next state and evaluates the type signature for default
- * value construction. If any variants of types isn't default constructible. It is thus 
- * raised as a compile time error through static assertion.
+ * @brief Class `Default` which constructs a default value if possible from
+ * `Option<T, Ts...>` regardless of any Type alternatives that are
+ * non-constructible. If a non-constructible type is found and checked during
+ * compile time, it automatically ignores the index and looks at the next state
+ * and evaluates the type signature for default value construction. If any
+ * variants of types isn't default constructible. It is thus raised as a compile
+ * time error through static assertion.
  */
 inline constexpr auto Default{details::Opt::Default{}};
 
 /**
-  * @brief Class `Wild`, which evaluates and 
-  * falls to every expression branch to match Some<T>, SomeAny, True_t, False_t
-  * even when the data is uninitialized, nullstate.
-  */
+ * @brief Class `Wild`, which evaluates and
+ * falls to every expression branch to match Some<T>, SomeAny, True_t, False_t
+ * even when the data is uninitialized, nullstate.
+ */
 inline constexpr auto Wild{rl::details::Wild_{}};
 
 /**
-  * @brief Class `SomeAny` only accepts any type of
-  * Some Types regardless of their indifference of variants from `Option<T, Ts...>`
-  */
+ * @brief Class `SomeAny` only accepts any type of
+ * Some Types regardless of their indifference of variants from `Option<T,
+ * Ts...>`
+ */
 inline constexpr auto SomeAny{rl::details::AnySome_{}};
 
 /**
-  * @brief Class `True` is a boolean evaluator which is derived and replacement
-  * to `true` of `bool` type. An `Option<bool>` can't pattern match via `true` even when the 
-  * value is initialized by default with `true`. The pattern matcher nullifies the `true` arm and discards it
-  * without issuing an error before, completely ignoring the section immediately. 
-  * This class helps to ensure the `true` state remains a valid arm for pattern matching.
-  */
+ * @brief Class `True` is a boolean evaluator which is derived and replacement
+ * to `true` of `bool` type. An `Option<bool>` can't pattern match via `true`
+ * even when the value is initialized by default with `true`. The pattern
+ * matcher nullifies the `true` arm and discards it without issuing an error
+ * before, completely ignoring the section immediately. This class helps to
+ * ensure the `true` state remains a valid arm for pattern matching.
+ */
 inline constexpr auto True{rl::details::True_{}};
 
 /**
-  * @brief Class `False` is a boolean evaluator which is derived and replacement
-  * to `false` of `bool` type. An `Option<bool>` can't pattern match via `false` even when the 
-  * value is initialized by default with `false`. The pattern matcher nullfies the `false` arm and discards it
-  * without issuing an error before, completely ignoring the section immediately. 
-  * This class ensures that the `false` state remains a valid arm for pattern matching.
-  */
+ * @brief Class `False` is a boolean evaluator which is derived and replacement
+ * to `false` of `bool` type. An `Option<bool>` can't pattern match via `false`
+ * even when the value is initialized by default with `false`. The pattern
+ * matcher nullfies the `false` arm and discards it without issuing an error
+ * before, completely ignoring the section immediately. This class ensures that
+ * the `false` state remains a valid arm for pattern matching.
+ */
 inline constexpr auto False{rl::details::False_{}};
 
 using rl::details::operator>>=;
@@ -5637,51 +5697,58 @@ using rl::details::operator>>=;
 }; // namespace rl
 
 /**
- * @brief Class `None_t` which accepts nothing. Tag to disengage optional objects regardless
- * of any invariants of types is default constructible. The internal layout secretly takes
- * `Option<None_t, Tp_, Ts...>` for the disengage optional object for nullstate.
+ * @brief Class `None_t` which accepts nothing. Tag to disengage optional
+ * objects regardless of any invariants of types is default constructible. The
+ * internal layout secretly takes `Option<None_t, Tp_, Ts...>` for the disengage
+ * optional object for nullstate.
  */
 inline constexpr auto None_t{rl::details::Opt::None{}};
 
 /**
- * @brief Class `Default_t` which constructs a default value if possible from `Option<T, Ts...>`
- * regardless of any Type alternatives that are non-constructible.
- * If a non-constructible type is found and checked during compile time, it automatically
- * ignores the index and looks at the next state and evaluates the type signature for default
- * value construction. If any invariants of types isn't default constructible. It is thus 
- * raised as a compile time error through static assertion.
+ * @brief Class `Default_t` which constructs a default value if possible from
+ * `Option<T, Ts...>` regardless of any Type alternatives that are
+ * non-constructible. If a non-constructible type is found and checked during
+ * compile time, it automatically ignores the index and looks at the next state
+ * and evaluates the type signature for default value construction. If any
+ * invariants of types isn't default constructible. It is thus raised as a
+ * compile time error through static assertion.
  */
 inline constexpr auto Default_t{rl::details::Opt::Default{}};
 
 /**
-  * @brief Class `Wild_t` an alias of `rl::Wild`, which evaluates and 
-  * falls to every expression branch to match Some<T>, SomeAny, True_t, False_t
-  * even when the data is uninitialized, nullstate.
-  */
+ * @brief Class `Wild_t` an alias of `rl::Wild`, which evaluates and
+ * falls to every expression branch to match Some<T>, SomeAny, True_t, False_t
+ * even when the data is uninitialized, nullstate.
+ */
 inline constexpr auto Wild_t{rl::details::Wild_{}};
 
 /**
-  * @brief Class `SomeAny_t` an alias of `rl::SomeAny` only accepts any type of
-  * Some Types regardless of their indifference of invariants from `Option<T, Ts...>`
-  */
+ * @brief Class `SomeAny_t` an alias of `rl::SomeAny` only accepts any type of
+ * Some Types regardless of their indifference of invariants from `Option<T,
+ * Ts...>`
+ */
 inline constexpr auto SomeAny_t{rl::details::AnySome_{}};
 
 /**
-  * @brief Class `True_t` an alias of `rl::True` is a boolean evaluator which is derived and replacement
-  * to `true` of `bool` type. An `Option<bool>` can't pattern match via `true` even when the 
-  * value is initialized by default with `true`. The pattern matcher nullifies the `true` arm and discards it
-  * without issuing an error before, completely ignoring the section immediately. 
-  * This class helps to ensure the `true` state remains a valid arm for pattern matching.
-  */
+ * @brief Class `True_t` an alias of `rl::True` is a boolean evaluator which is
+ * derived and replacement to `true` of `bool` type. An `Option<bool>` can't
+ * pattern match via `true` even when the value is initialized by default with
+ * `true`. The pattern matcher nullifies the `true` arm and discards it without
+ * issuing an error before, completely ignoring the section immediately. This
+ * class helps to ensure the `true` state remains a valid arm for pattern
+ * matching.
+ */
 inline constexpr auto True_t{rl::details::True_{}};
 
 /**
-  * @brief Class `False_t` an alias of `rl::False` is a boolean evaluator which is derived and replacement
-  * to `false` of `bool` type. An `Option<bool>` can't pattern match via `false` even when the 
-  * value is initialized by default with `false`. The pattern matcher nullfies the `false` arm and discards it
-  * without issuing an error before, completely ignoring the section immediately. 
-  * This class ensures that the `false` state remains a valid arm for pattern matching.
-  */
+ * @brief Class `False_t` an alias of `rl::False` is a boolean evaluator which
+ * is derived and replacement to `false` of `bool` type. An `Option<bool>` can't
+ * pattern match via `false` even when the value is initialized by default with
+ * `false`. The pattern matcher nullfies the `false` arm and discards it without
+ * issuing an error before, completely ignoring the section immediately. This
+ * class ensures that the `false` state remains a valid arm for pattern
+ * matching.
+ */
 inline constexpr auto False_t{rl::details::False_{}};
 
 using rl::operator>>=;
