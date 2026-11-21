@@ -346,10 +346,7 @@ template <std::size_t N_> struct Pad_ {
     unsigned char _pad[N_]{};
 };
 
-template <
-
-    >
-struct Pad_<0> {};
+template <> struct Pad_<0> {};
 
 template <typename Qp_, bool TrivialDtor_ = (std::is_trivially_destructible_v<
                                              std::remove_cv_t<Qp_>>)>
@@ -570,10 +567,6 @@ concept MatchPattern =
      details::is_some_pattern_<std::remove_cvref_t<Pp_>>::value ||
      requires { typename std::remove_cvref_t<Pp_>::bool_case_tag_; });
 
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
-#endif
 template <typename Pp_, typename Fp_> struct Arm_ {
   public:
     using pattern_type = std::remove_cvref_t<Pp_>;
@@ -587,10 +580,18 @@ template <typename Pp_, typename Fp_> struct Arm_ {
 
   private:
     static constexpr std::size_t mid_pad_ =
-        (alignof(handler_type) > 1 && pattern_footprint_ > 0)
-            ? (align_up_(pattern_footprint_, alignof(handler_type)) -
-               pattern_footprint_)
-            : 0;
+        align_up_(pattern_footprint_, alignof(handler_type)) -
+        pattern_footprint_;
+
+  private:
+    static_assert(
+        alignof(handler_type) >= alignof(pattern_type),
+        "Arm_ assumes handler_type carries the struct's max alignment, so "
+        "the layout ends with zero implicit tail padding. A pattern_type "
+        "with stricter alignment than its handler would need a trailing "
+        "Pad_<>, but a non-zero trailing Pad_<> can't be elided by "
+        "no_unique_address (it's the last member, nothing follows it to "
+        "overlap into) and would cost a real byte instead of saving one.");
 
   public:
     [[no_unique_address]] pattern_type pattern;
@@ -611,11 +612,27 @@ template <typename Pp_, typename Fp_> struct Arm_ {
         : pattern(std::forward<PpCtor_>(pattern_)),
           handler(std::forward<FpCtor_>(handler_)) {}
 };
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 
 template <typename Pp_, typename Fp_> Arm_(Pp_, Fp_) -> Arm_<Pp_, Fp_>;
+
+template <typename Pp_, typename Fp_>
+consteval auto arm_layout_valid_(void) noexcept(true) -> bool {
+    using Arm_t_ = Arm_<Pp_, Fp_>;
+    using pattern_type = typename Arm_t_::pattern_type;
+    using handler_type = typename Arm_t_::handler_type;
+
+    constexpr std::size_t footprint_{
+        std::is_empty_v<pattern_type> ? std::size_t{0} : sizeof(pattern_type)};
+    constexpr std::size_t mid_{align_up_(footprint_, alignof(handler_type)) -
+                               footprint_};
+
+    static_assert(sizeof(Arm_t_) == footprint_ + mid_ + sizeof(handler_type),
+                  "Arm_'s hand-computed layout drifted from its actual "
+                  "size; this invariant is what makes the explicit "
+                  "Pad_<> in Arm_ correct instead of merely plausible.");
+
+    return true;
+}
 
 template <typename Pp_, typename Fp_>
 constexpr auto operator>>=(Pp_ &&pattern_, Fp_ &&handler_)
@@ -623,6 +640,8 @@ constexpr auto operator>>=(Pp_ &&pattern_, Fp_ &&handler_)
     requires(!std::is_integral_v<std::remove_cvref_t<Fp_>> ||
              MatchPattern<Pp_> || !std::is_integral_v<std::remove_cvref_t<Pp_>>)
 {
+    static_assert(arm_layout_valid_<std::decay_t<Pp_>, std::decay_t<Fp_>>());
+
     return {std::forward<Pp_>(pattern_), std::forward<Fp_>(handler_)};
 }
 
@@ -1524,10 +1543,7 @@ using __dedup_tuple_t = typename __dedup_pack_impl_<std::tuple<>, Ts_...>::type;
 
 template <typename Tuple_> struct __tuple_to_option_;
 
-template <
-
-    >
-struct __tuple_to_option_<std::tuple<>> {
+template <> struct __tuple_to_option_<std::tuple<>> {
   public:
     using type = Opt::None;
 };
@@ -1801,18 +1817,12 @@ struct __wrap_in_option_<T_> {
     using type = T_;
 };
 
-template <
-
-    >
-struct __wrap_in_option_<void> {
+template <> struct __wrap_in_option_<void> {
   public:
     using type = void;
 };
 
-template <
-
-    >
-struct __wrap_in_option_<Opt::None> {
+template <> struct __wrap_in_option_<Opt::None> {
   public:
     using type = Opt::None;
 };
@@ -1842,10 +1852,7 @@ struct __match_explicit_results_convertible_<
 
 template <typename Tuple_> struct __tuple_to_wrapped_option_;
 
-template <
-
-    >
-struct __tuple_to_wrapped_option_<std::tuple<>> {
+template <> struct __tuple_to_wrapped_option_<std::tuple<>> {
   public:
     using type = Opt::None;
 };
@@ -1976,7 +1983,7 @@ struct __match_inferred_results_convertible_<std::tuple<Alternatives_...>,
 // C++26 Pack Indexing (P2662R3)
 template <std::size_t Index_, typename... Ts_>
     requires(Index_ < sizeof...(Ts_))
-struct alignas(1) __pack_element_impl_ {
+struct __pack_element_impl_ {
     using type = Ts_...[Index_];
 };
 
@@ -1988,10 +1995,10 @@ using __pack_element_t = typename __pack_element_impl_<Index_, Ts_...>::type;
 // Never prefer F_& here: doing so can infer a different overload from the one
 // that std::forward<F_>(op) invokes.
 template <typename F_, typename Arg_, bool = std::is_invocable_v<F_, Arg_>>
-struct alignas(1) __map_invoke_result_materializable_ : std::false_type {};
+struct __map_invoke_result_materializable_ : std::false_type {};
 
 template <typename F_, typename Arg_>
-struct alignas(1) __map_invoke_result_materializable_<F_, Arg_, true> {
+struct __map_invoke_result_materializable_<F_, Arg_, true> {
   private:
     using R_ = std::invoke_result_t<F_, Arg_>;
 
@@ -2006,10 +2013,10 @@ concept __map_invocable_non_void_ =
     __map_invoke_result_materializable_<F_, Arg_>::value;
 
 template <typename F_, bool = std::is_invocable_v<F_>>
-struct alignas(1) __nullary_invoke_result_materializable_ : std::false_type {};
+struct __nullary_invoke_result_materializable_ : std::false_type {};
 
 template <typename F_>
-struct alignas(1) __nullary_invoke_result_materializable_<F_, true> {
+struct __nullary_invoke_result_materializable_<F_, true> {
   private:
     using R_ = std::invoke_result_t<F_>;
 
@@ -2021,12 +2028,12 @@ struct alignas(1) __nullary_invoke_result_materializable_<F_, true> {
 
 template <typename F_, typename Arg_,
           bool = __map_invocable_non_void_<F_, Arg_>>
-struct alignas(1) __map_single_result_ {
+struct __map_single_result_ {
     using type = void;
 };
 
 template <typename F_, typename Arg_>
-struct alignas(1) __map_single_result_<F_, Arg_, true> {
+struct __map_single_result_<F_, Arg_, true> {
     using type = std::remove_cvref_t<std::invoke_result_t<F_, Arg_>>;
 };
 
@@ -2034,17 +2041,16 @@ template <typename F_, typename Arg_>
 using __map_single_result_t = typename __map_single_result_<F_, Arg_>::type;
 
 template <typename AccTuple_, typename F_, typename... Args_>
-struct alignas(1) __collect_map_results_;
+struct __collect_map_results_;
 
 template <typename AccTuple_, typename F_>
-struct alignas(1) __collect_map_results_<AccTuple_, F_> {
+struct __collect_map_results_<AccTuple_, F_> {
     using type = AccTuple_;
 };
 
 template <typename AccTuple_, typename F_, typename FirstArg_,
           typename... RestArgs_>
-struct alignas(1)
-    __collect_map_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
+struct __collect_map_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
   private:
     using SingleRes_ = __map_single_result_t<F_, FirstArg_>;
     using NextAcc_ = std::conditional_t<
@@ -2092,25 +2098,23 @@ concept option_value_comparable_ =
     std::constructible_from<Alternative_, Value_> &&
     std::equality_comparable_with<Alternative_, Value_>;
 
-template <typename> struct alignas(1) __option_types_tuple_ {
+template <typename> struct __option_types_tuple_ {
     using type = std::tuple<>;
 };
 
 template <typename Up_, typename... Args_>
-struct alignas(1) __option_types_tuple_<Opt::Option<Up_, Args_...>> {
+struct __option_types_tuple_<Opt::Option<Up_, Args_...>> {
     using type = std::tuple<Up_, Args_...>;
 };
 
-template <typename Tuple1_, typename Tuple2_>
-struct alignas(1) __tuple_cat_unique_;
+template <typename Tuple1_, typename Tuple2_> struct __tuple_cat_unique_;
 
-template <typename Tuple1_>
-struct alignas(1) __tuple_cat_unique_<Tuple1_, std::tuple<>> {
+template <typename Tuple1_> struct __tuple_cat_unique_<Tuple1_, std::tuple<>> {
     using type = Tuple1_;
 };
 
 template <typename Tuple1_, typename First_, typename... Rest_>
-struct alignas(1) __tuple_cat_unique_<Tuple1_, std::tuple<First_, Rest_...>> {
+struct __tuple_cat_unique_<Tuple1_, std::tuple<First_, Rest_...>> {
     using type = typename __tuple_cat_unique_<
         typename __append_unique_<Tuple1_, First_>::type,
         std::tuple<Rest_...>>::type;
@@ -2119,10 +2123,10 @@ struct alignas(1) __tuple_cat_unique_<Tuple1_, std::tuple<First_, Rest_...>> {
 // The returned Option must be materializable from the actual invoke result.
 // F_ is the forwarded callable category used by the implementation.
 template <typename F_, typename Arg_, bool = std::is_invocable_v<F_, Arg_>>
-struct alignas(1) __and_then_invocable_impl_ : std::false_type {};
+struct __and_then_invocable_impl_ : std::false_type {};
 
 template <typename F_, typename Arg_>
-struct alignas(1) __and_then_invocable_impl_<F_, Arg_, true> {
+struct __and_then_invocable_impl_<F_, Arg_, true> {
   private:
     using InvokeResult_ = std::invoke_result_t<F_, Arg_>;
     using ResultOption_ = std::remove_cvref_t<InvokeResult_>;
@@ -2137,12 +2141,12 @@ template <typename F_, typename Arg_>
 concept __and_then_invocable_ = __and_then_invocable_impl_<F_, Arg_>::value;
 
 template <typename F_, typename Arg_, bool = __and_then_invocable_<F_, Arg_>>
-struct alignas(1) __and_then_single_types_ {
+struct __and_then_single_types_ {
     using type = std::tuple<>;
 };
 
 template <typename F_, typename Arg_>
-struct alignas(1) __and_then_single_types_<F_, Arg_, true> {
+struct __and_then_single_types_<F_, Arg_, true> {
   private:
     using InvocableRes_ = std::remove_cvref_t<std::invoke_result_t<F_, Arg_>>;
 
@@ -2151,17 +2155,16 @@ struct alignas(1) __and_then_single_types_<F_, Arg_, true> {
 };
 
 template <typename AccTuple_, typename F_, typename... Args_>
-struct alignas(1) __collect_and_then_results_;
+struct __collect_and_then_results_;
 
 template <typename AccTuple_, typename F_>
-struct alignas(1) __collect_and_then_results_<AccTuple_, F_> {
+struct __collect_and_then_results_<AccTuple_, F_> {
     using type = AccTuple_;
 };
 
 template <typename AccTuple_, typename F_, typename FirstArg_,
           typename... RestArgs_>
-struct alignas(1)
-    __collect_and_then_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
+struct __collect_and_then_results_<AccTuple_, F_, FirstArg_, RestArgs_...> {
   private:
     using FirstTypesTuple_ =
         typename __and_then_single_types_<F_, FirstArg_>::type;
@@ -2190,10 +2193,7 @@ using __and_then_return_type_t = typename __tuple_to_option_<
 namespace details {
 template <typename... Types_> union Alternative_;
 
-template <
-
-    >
-union Alternative_<> {
+template <> union Alternative_<> {
   public:
     std::byte layout_[1];
 
@@ -3323,13 +3323,15 @@ class alignas(
     }
 
   public:
-    constexpr auto has_any_engaged_value [[nodiscard]](void) const
+    constexpr auto has_any_engaged_value [[nodiscard]] (void) const
         noexcept(true) -> bool {
         return this->is_some();
     }
 
   public:
-    constexpr Option(void) = delete("Option does not support empty-handed initialization. Use Some<T>(v) or Default to prevent deletion.");
+    constexpr Option(void) = delete (
+        "Option does not support empty-handed initialization. Use "
+        "Some<T>(v) or Default to prevent deletion.");
 
   public:
     constexpr Option(const typename details::Opt::Some<Tp_> &some) noexcept(
@@ -3503,7 +3505,7 @@ class alignas(
 
   private:
     template <typename Qp_>
-    constexpr auto get_type_name [[nodiscard]](void) const & noexcept(true)
+    constexpr auto get_type_name [[nodiscard]] (void) const & noexcept(true)
         -> std::string_view {
 #if RL_SUPPORTS_REFLECTION
         return std::meta::display_string_of(^^Qp_);
@@ -3626,7 +3628,7 @@ class alignas(
                  (!std::is_invocable_v<Qp_, Opt::None> ||
                   details::__map_invocable_non_void_<Qp_, Opt::None>))
     constexpr auto map_or_transform
-        [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+        [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
             -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
         return std::forward<Self_>(self)
@@ -3667,7 +3669,7 @@ class alignas(
             (!std::is_invocable_v<Qp_, Opt::None> ||
              details::__map_invocable_non_void_<Qp_, Opt::None>))
     constexpr auto map_or_transform
-        [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+        [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
             -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
         return std::forward<Self_>(self)
@@ -3708,7 +3710,7 @@ class alignas(
                 std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>, Qp_,
                 ForwardLike_t<Self_, Tp_>, ForwardLike_t<Self_, Args_>...>)
     constexpr auto map_or_else
-        [[nodiscard]](this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
+        [[nodiscard]] (this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
             -> std::remove_cvref_t<std::invoke_result_t<FallbackFn_>> {
         using Rp_ = std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>;
         return std::forward<Self_>(self)
@@ -3747,7 +3749,7 @@ class alignas(
                 details::__map_single_result_t<Qp_,
                                                ForwardLike_t<Self_, Target_>>>)
     constexpr auto map_or_else
-        [[nodiscard]](this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
+        [[nodiscard]] (this Self_ &&self, Qp_ &&op, FallbackFn_ &&f_)
             -> std::remove_cvref_t<std::invoke_result_t<FallbackFn_>> {
         using Rp_ = std::remove_cvref_t<std::invoke_result_t<FallbackFn_>>;
         return std::forward<Self_>(self)
@@ -3791,7 +3793,7 @@ class alignas(
                  ? std::is_move_constructible_v<Tp_>
                  : std::is_copy_constructible_v<Tp_>))
     constexpr auto unwrap_or_else
-        [[nodiscard]](this Self_ &&self, Qp_ &&op) noexcept(
+        [[nodiscard]] (this Self_ &&self, Qp_ &&op) noexcept(
             std::is_rvalue_reference_v<Self_ &&>
                 ? std::is_nothrow_move_constructible_v<Tp_>
                 : std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_ {
@@ -3824,7 +3826,7 @@ class alignas(
              (std::invocable<Qp_, Opt::None> &&
               std::convertible_to<std::invoke_result_t<Qp_, Opt::None>,
                                   Option>)))
-    constexpr auto or_else [[nodiscard]](this Self_ &&self, Qp_ &&op)
+    constexpr auto or_else [[nodiscard]] (this Self_ &&self, Qp_ &&op)
         -> Option {
         return std::forward<Self_>(self).match(
             SomeAny >>= [&](auto &&val) -> Option {
@@ -3853,7 +3855,7 @@ class alignas(
             std::same_as<std::remove_cvref_t<Self_>, Option> &&
             details::__all_mappable_alternatives_<
                 Qp_, ForwardLike_t<Self_, Tp_>, ForwardLike_t<Self_, Args_>...>)
-    constexpr auto map [[nodiscard]](this Self_ &&self, Qp_ &&op) {
+    constexpr auto map [[nodiscard]] (this Self_ &&self, Qp_ &&op) {
         using ResultOption =
             details::__map_option_return_type_t<Qp_, ForwardLike_t<Self_, Tp_>,
                                                 ForwardLike_t<Self_, Args_>...>;
@@ -3882,7 +3884,7 @@ class alignas(
                  details::__map_invocable_non_void_<
                      Qp_, ForwardLike_t<Self_, Target_>>)
     constexpr auto
-    map [[nodiscard]](this Self_ &&self, Qp_ &&op) -> Opt::Option<
+    map [[nodiscard]] (this Self_ &&self, Qp_ &&op) -> Opt::Option<
         details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>> {
         using Res_ =
             details::__map_single_result_t<Qp_, ForwardLike_t<Self_, Target_>>;
@@ -3914,7 +3916,7 @@ class alignas(
                  details::__all_map_or_valid_<std::remove_cvref_t<Up_>, Qp_,
                                               ForwardLike_t<Self_, Tp_>,
                                               ForwardLike_t<Self_, Args_>...>)
-    constexpr auto map_or [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+    constexpr auto map_or [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
         -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
         return std::forward<Self_>(self)
@@ -3948,7 +3950,7 @@ class alignas(
             std::is_constructible_v<std::remove_cvref_t<Up_>,
                                     details::__map_single_result_t<
                                         Qp_, ForwardLike_t<Self_, Target_>>>)
-    constexpr auto map_or [[nodiscard]](this Self_ &&self, Qp_ &&op, Up_ &&v_)
+    constexpr auto map_or [[nodiscard]] (this Self_ &&self, Qp_ &&op, Up_ &&v_)
         -> std::remove_cvref_t<Up_> {
         using Rp_ = std::remove_cvref_t<Up_>;
         return std::forward<Self_>(self)
@@ -4005,7 +4007,7 @@ class alignas(
             std::same_as<std::remove_cvref_t<Self_>, Option> &&
             details::__all_and_then_alternatives_<
                 Qp_, ForwardLike_t<Self_, Tp_>, ForwardLike_t<Self_, Args_>...>)
-    constexpr auto and_then [[nodiscard]](this Self_ &&self, Qp_ &&op) {
+    constexpr auto and_then [[nodiscard]] (this Self_ &&self, Qp_ &&op) {
         using ResultOption =
             details::__and_then_return_type_t<Qp_, ForwardLike_t<Self_, Tp_>,
                                               ForwardLike_t<Self_, Args_>...>;
@@ -4042,7 +4044,7 @@ class alignas(
              (std::same_as<Target_, Args_> || ...)) &&
             std::same_as<std::remove_cvref_t<Self_>, Option> &&
             details::__and_then_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto and_then [[nodiscard]](this Self_ &&self, Qp_ &&op)
+    constexpr auto and_then [[nodiscard]] (this Self_ &&self, Qp_ &&op)
         -> std::remove_cvref_t<
             std::invoke_result_t<Qp_, ForwardLike_t<Self_, Target_>>> {
         using ResultOption = std::remove_cvref_t<
@@ -4069,7 +4071,7 @@ class alignas(
 
   public:
     template <typename... Rp_, typename Self_, typename... Arms_>
-    constexpr auto match [[nodiscard]](this Self_ &&self, Arms_ &&...arms)
+    constexpr auto match [[nodiscard]] (this Self_ &&self, Arms_ &&...arms)
         requires(sizeof...(Arms_) > 0 &&
                  details::match_is_exhaustive_<std::tuple<Tp_, Args_...>,
                                                std::tuple<Arms_...>>::value &&
@@ -4152,7 +4154,7 @@ class alignas(
 
   public:
     constexpr auto expect
-        [[nodiscard]](std::string_view msg) const &[[RL_LIFETIME_BOUND]]
+        [[nodiscard]] (std::string_view msg) const &[[RL_LIFETIME_BOUND]]
         -> const Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::expect() failed: {}",
@@ -4164,7 +4166,7 @@ class alignas(
 
   public:
     constexpr auto expect
-        [[nodiscard]](std::string_view msg) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
+        [[nodiscard]] (std::string_view msg) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::expect() failed: {}",
                             this->template get_type_name<Tp_>(), msg);
@@ -4174,7 +4176,7 @@ class alignas(
     }
 
   public:
-    constexpr auto expect [[nodiscard]](std::string_view msg) && -> Tp_
+    constexpr auto expect [[nodiscard]] (std::string_view msg) && -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4186,7 +4188,7 @@ class alignas(
     }
 
   public:
-    constexpr auto expect [[nodiscard]](std::string_view msg) const && -> Tp_
+    constexpr auto expect [[nodiscard]] (std::string_view msg) const && -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4198,7 +4200,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]](void) const &[[RL_LIFETIME_BOUND]]
+    constexpr auto unwrap [[nodiscard]] (void) const &[[RL_LIFETIME_BOUND]]
     -> const Tp_ & {
         if (!this->has_primary_()) {
             details::panic_(
@@ -4210,7 +4212,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]](void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
+    constexpr auto unwrap [[nodiscard]] (void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
         if (!this->has_primary_()) {
             details::panic_(
                 "Option<{}>::unwrap() failed: Option does not wield any value.",
@@ -4221,7 +4223,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]](void) && -> Tp_
+    constexpr auto unwrap [[nodiscard]] (void) && -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4234,7 +4236,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap [[nodiscard]](void) const && -> Tp_
+    constexpr auto unwrap [[nodiscard]] (void) const && -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
         if (!this->has_primary_()) {
@@ -4248,7 +4250,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]](void) const &[[RL_LIFETIME_BOUND]]
+    constexpr auto unwrap [[nodiscard]] (void) const &[[RL_LIFETIME_BOUND]]
     -> const Qp_ &
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
@@ -4264,7 +4266,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]](void) &[[RL_LIFETIME_BOUND]] -> Qp_ &
+    constexpr auto unwrap [[nodiscard]] (void) &[[RL_LIFETIME_BOUND]] -> Qp_ &
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
         if (!this->template has_type_<Qp_>()) {
@@ -4279,7 +4281,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]](void) && -> Qp_
+    constexpr auto unwrap [[nodiscard]] (void) && -> Qp_
         requires((std::same_as<Qp_, Tp_> ||
                   (std::same_as<Qp_, Args_> || ...)) &&
                  std::is_move_constructible_v<Qp_>)
@@ -4291,16 +4293,17 @@ class alignas(
                             this->template get_type_name<Qp_>());
         }
 
-// ResetOnSuccess_ is a local RAII guard; mixed int+pointer layout causes
-// unavoidable padding. Suppress -Wpadded for this local struct only.
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
-#endif
+        // ResetOnSuccess_ is a local RAII guard; mixed int+pointer layout
+        // needs a gap before owner_. It's declared explicitly below (not
+        // left implicit) so there's nothing for -Wpadded to flag.
         struct alignas(void *) ResetOnSuccess_ {
             // initial_uncaught_ first to avoid tail-padding
             // between int and pointer members.
             int initial_uncaught_ = 0;
+
+            [[no_unique_address]] Pad_<
+                align_up_(sizeof(int), alignof(Option *)) - sizeof(int)> _pad{};
+
             Option *owner_;
 
             constexpr explicit ResetOnSuccess_(Option *owner
@@ -4324,9 +4327,6 @@ class alignas(
                 owner_->reset();
             }
         };
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 
         ResetOnSuccess_ guard_{this};
         return static_cast<Qp_ &&>(this->template get_<Qp_>());
@@ -4334,7 +4334,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto unwrap [[nodiscard]](void) const && -> Qp_
+    constexpr auto unwrap [[nodiscard]] (void) const && -> Qp_
         requires((std::same_as<Qp_, Tp_> ||
                   (std::same_as<Qp_, Args_> || ...)) &&
                  std::is_copy_constructible_v<Qp_>)
@@ -4350,7 +4350,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]](void) const &[[RL_LIFETIME_BOUND]]
+    constexpr auto value [[nodiscard]] (void) const &[[RL_LIFETIME_BOUND]]
     -> const Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
@@ -4362,7 +4362,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]](void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
+    constexpr auto value [[nodiscard]] (void) &[[RL_LIFETIME_BOUND]] -> Tp_ & {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
                             "does not hold a value!",
@@ -4373,7 +4373,8 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]](void) &&[[RL_LIFETIME_BOUND]] -> Tp_ && {
+    constexpr auto value [[nodiscard]] (void) &&[[RL_LIFETIME_BOUND]]
+    -> Tp_ && {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
                             "does not hold a value!",
@@ -4384,7 +4385,7 @@ class alignas(
     }
 
   public:
-    constexpr auto value [[nodiscard]](void) const &&[[RL_LIFETIME_BOUND]]
+    constexpr auto value [[nodiscard]] (void) const &&[[RL_LIFETIME_BOUND]]
     -> const Tp_ && {
         if (!this->has_primary_()) {
             details::panic_("Option<{}>::value() failed - Bad access: Option "
@@ -4396,7 +4397,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]](void) const & -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]] (void) const & -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4407,7 +4408,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]](void) & -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]] (void) & -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4418,7 +4419,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]](void) && -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]] (void) && -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4429,7 +4430,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_none [[nodiscard]](void) const && -> Opt::None {
+    constexpr auto unwrap_none [[nodiscard]] (void) const && -> Opt::None {
         if (this->is_some()) {
             details::panic_("Option<{}>::unwrap_none() failed - Bad access: "
                             "Option holds a value!",
@@ -4444,7 +4445,7 @@ class alignas(
 
   private:
     template <typename Fn_>
-    constexpr auto consume_unchecked [[nodiscard]](Fn_ &&fn) & noexcept(
+    constexpr auto consume_unchecked [[nodiscard]] (Fn_ &&fn) & noexcept(
         std::is_nothrow_invocable_v<Fn_, Tp_ &&>)
         -> std::invoke_result_t<Fn_, Tp_ &&>
         requires(std::invocable<Fn_, Tp_ &&> &&
@@ -4465,20 +4466,21 @@ class alignas(
     // Extract by value. If the move throws, the Option stays
     // engaged.
   private:
-    constexpr auto take_unchecked [[nodiscard]](void) & noexcept(
+    constexpr auto take_unchecked [[nodiscard]] (void) & noexcept(
         std::is_nothrow_move_constructible_v<Tp_>) -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
-// ResetOnSuccess_ is a local RAII guard; mixed int+pointer layout causes
-// unavoidable padding. Suppress -Wpadded for this local struct only.
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
-#endif
+        // ResetOnSuccess_ is a local RAII guard; mixed int+pointer layout
+        // needs a gap before owner_. It's declared explicitly below (not
+        // left implicit) so there's nothing for -Wpadded to flag.
         struct alignas(void *) ResetOnSuccess_ {
             // initial_uncaught_ first to avoid tail-padding
             // between int and pointer members.
             int initial_uncaught_ = 0;
+
+            [[no_unique_address]] Pad_<
+                align_up_(sizeof(int), alignof(Option *)) - sizeof(int)> _pad{};
+
             Option *owner_;
 
             constexpr explicit ResetOnSuccess_(Option *owner
@@ -4502,9 +4504,6 @@ class alignas(
                 owner_->reset();
             }
         };
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 
         ResetOnSuccess_ guard_{this};
         return static_cast<Tp_ &&>(this->primary_value_());
@@ -4518,7 +4517,7 @@ class alignas(
 #pragma clang diagnostic ignored "-Wlifetime-safety-lifetimebound-violation"
 #endif
   public:
-    constexpr auto as_mut_ptr [[nodiscard]](void) & noexcept(true)
+    constexpr auto as_mut_ptr [[nodiscard]] (void) & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<Tp_ *> {
         if (!this->has_primary_()) {
             return Opt::None();
@@ -4535,7 +4534,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto as_mut_ptr [[nodiscard]](void) & noexcept(true)
+    constexpr auto as_mut_ptr [[nodiscard]] (void) & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<Qp_ *>
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
@@ -4553,7 +4552,7 @@ class alignas(
     template <typename Qp_> constexpr auto as_mut_ptr(void) const && = delete;
 
   public:
-    constexpr auto as_immut_ptr [[nodiscard]](void) const & noexcept(true)
+    constexpr auto as_immut_ptr [[nodiscard]] (void) const & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<const Tp_ *> {
         if (!this->has_primary_()) {
             return Opt::None();
@@ -4570,7 +4569,7 @@ class alignas(
 
   public:
     template <typename Qp_>
-    constexpr auto as_immut_ptr [[nodiscard]](void) const & noexcept(true)
+    constexpr auto as_immut_ptr [[nodiscard]] (void) const & noexcept(true)
         [[RL_LIFETIME_BOUND]] -> Option<const Qp_ *>
         requires(std::same_as<Qp_, Tp_> || (std::same_as<Qp_, Args_> || ...))
     {
@@ -4593,7 +4592,7 @@ class alignas(
 #endif
 
   public:
-    constexpr auto take [[nodiscard]](void) & noexcept(
+    constexpr auto take [[nodiscard]] (void) & noexcept(
         std::is_nothrow_move_constructible_v<Tp_> &&
         (std::is_nothrow_move_constructible_v<Args_> && ...))
         -> Option<Tp_, Args_...>
@@ -4613,7 +4612,7 @@ class alignas(
 
   public:
     template <typename Up_>
-    constexpr auto replace [[nodiscard]](Up_ &&new_val) & noexcept(
+    constexpr auto replace [[nodiscard]] (Up_ &&new_val) & noexcept(
         std::is_nothrow_move_constructible_v<Tp_> &&
         (std::is_nothrow_move_constructible_v<Args_> && ...) &&
         std::is_nothrow_constructible_v<
@@ -4639,23 +4638,23 @@ class alignas(
     template <typename Up_> constexpr auto replace(Up_ &&) const && = delete;
 
   public:
-    constexpr auto is_none [[nodiscard]](void) const noexcept(true) -> bool {
+    constexpr auto is_none [[nodiscard]] (void) const noexcept(true) -> bool {
         return (this->active_index_() == 0);
     }
 
   public:
-    constexpr auto is_some [[nodiscard]](void) const noexcept(true) -> bool {
+    constexpr auto is_some [[nodiscard]] (void) const noexcept(true) -> bool {
         return (this->active_index_() != 0);
     }
 
   public:
     template <typename Qp_>
-    constexpr auto is_some [[nodiscard]](void) const noexcept(true) -> bool {
+    constexpr auto is_some [[nodiscard]] (void) const noexcept(true) -> bool {
         return this->template has_type_<Qp_>();
     }
 
   public:
-    constexpr auto is_default [[nodiscard]](void) const
+    constexpr auto is_default [[nodiscard]] (void) const
         noexcept(std::is_nothrow_default_constructible_v<Tp_> &&
                  noexcept(std::declval<const Tp_ &>() ==
                           std::declval<const Tp_ &>())) -> bool
@@ -4677,7 +4676,7 @@ class alignas(
     }
 
   public:
-    constexpr auto is_default [[nodiscard]](void) const noexcept(
+    constexpr auto is_default [[nodiscard]] (void) const noexcept(
         std::is_nothrow_default_constructible_v<default_alternative_type_> &&
         noexcept(std::declval<const default_alternative_type_ &>() ==
                  std::declval<const default_alternative_type_ &>())) -> bool
@@ -4699,7 +4698,7 @@ class alignas(
             details::__all_predicate_invocable_<Qp_, ForwardLike_t<Self_, Tp_>,
                                                 ForwardLike_t<Self_, Args_>...>)
     constexpr auto
-    is_some_and [[nodiscard]](this Self_ &&self, Qp_ &&prop_) noexcept((
+    is_some_and [[nodiscard]] (this Self_ &&self, Qp_ &&prop_) noexcept((
         std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Tp_>> &&
         (std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Args_>> && ...)))
         -> bool {
@@ -4727,7 +4726,7 @@ class alignas(
              (std::same_as<Target_, Args_> || ...)) &&
             std::same_as<std::remove_cvref_t<Self_>, Option> &&
             details::__predicate_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto is_some_and [[nodiscard]](this Self_ &&self, Qp_ &&prop_)
+    constexpr auto is_some_and [[nodiscard]] (this Self_ &&self, Qp_ &&prop_)
         -> bool {
         return std::forward<Self_>(self)
             .match(
@@ -4758,7 +4757,7 @@ class alignas(
             details::__all_predicate_invocable_<Qp_, ForwardLike_t<Self_, Tp_>,
                                                 ForwardLike_t<Self_, Args_>...>)
     constexpr auto
-    is_none_or [[nodiscard]](this Self_ &&self, Qp_ &&prop_) noexcept((
+    is_none_or [[nodiscard]] (this Self_ &&self, Qp_ &&prop_) noexcept((
         std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Tp_>> &&
         (std::is_nothrow_invocable_v<Qp_, ForwardLike_t<Self_, Args_>> && ...)))
         -> bool {
@@ -4786,7 +4785,7 @@ class alignas(
              (std::same_as<Target_, Args_> || ...)) &&
             std::same_as<std::remove_cvref_t<Self_>, Option> &&
             details::__predicate_invocable_<Qp_, ForwardLike_t<Self_, Target_>>)
-    constexpr auto is_none_or [[nodiscard]](this Self_ &&self, Qp_ &&prop_)
+    constexpr auto is_none_or [[nodiscard]] (this Self_ &&self, Qp_ &&prop_)
         -> bool {
         return std::forward<Self_>(self)
             .match(
@@ -4818,7 +4817,7 @@ class alignas(
                       ? std::is_move_constructible_v<Tp_>
                       : std::is_copy_constructible_v<Tp_>))
     constexpr auto unwrap_or
-        [[nodiscard]](this Self_ &&self, Qp_ &&v_) noexcept(
+        [[nodiscard]] (this Self_ &&self, Qp_ &&v_) noexcept(
             std::is_rvalue_reference_v<Self_ &&>
                 ? (std::is_nothrow_move_constructible_v<Tp_> &&
                    std::is_nothrow_constructible_v<Tp_, Qp_>)
@@ -4836,7 +4835,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]](void) const & noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]] (void) const & noexcept(
         std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
@@ -4845,7 +4844,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]](void) & noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]] (void) & noexcept(
         std::is_nothrow_copy_constructible_v<Tp_>) -> Tp_
         requires(std::is_copy_constructible_v<Tp_>)
     {
@@ -4853,7 +4852,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]](void) && noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]] (void) && noexcept(
         std::is_nothrow_move_constructible_v<Tp_>) -> Tp_
         requires(std::is_move_constructible_v<Tp_>)
     {
@@ -4861,7 +4860,7 @@ class alignas(
     }
 
   public:
-    constexpr auto unwrap_unchecked [[nodiscard]](void) const && noexcept(
+    constexpr auto unwrap_unchecked [[nodiscard]] (void) const && noexcept(
         std::is_nothrow_constructible_v<Tp_, const Tp_ &&>) -> Tp_
         requires(std::is_constructible_v<Tp_, const Tp_ &&>)
     {
@@ -4876,7 +4875,7 @@ class alignas(
                  (std::is_rvalue_reference_v<Self_ &&>
                       ? std::is_move_constructible_v<Tp_>
                       : std::is_copy_constructible_v<Tp_>))
-    constexpr auto unwrap_or_default [[nodiscard]](this Self_ &&self) noexcept(
+    constexpr auto unwrap_or_default [[nodiscard]] (this Self_ &&self) noexcept(
         std::is_nothrow_default_constructible_v<Tp_> &&
         (std::is_rvalue_reference_v<Self_ &&>
              ? std::is_nothrow_move_constructible_v<Tp_>
