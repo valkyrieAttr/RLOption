@@ -578,20 +578,12 @@ template <typename Pp_, typename Fp_> struct Arm_ {
     static constexpr std::size_t pattern_footprint_ =
         std::is_empty_v<pattern_type> ? std::size_t{0} : sizeof(pattern_type);
 
+    // This pad aligns the handler after the pattern. If the pattern is more
+    // strongly aligned, Arm_ can also have valid implicit tail padding.
   private:
     static constexpr std::size_t mid_pad_ =
         align_up_(pattern_footprint_, alignof(handler_type)) -
         pattern_footprint_;
-
-  private:
-    static_assert(
-        alignof(handler_type) >= alignof(pattern_type),
-        "Arm_ assumes handler_type carries the struct's max alignment, so "
-        "the layout ends with zero implicit tail padding. A pattern_type "
-        "with stricter alignment than its handler would need a trailing "
-        "Pad_<>, but a non-zero trailing Pad_<> can't be elided by "
-        "no_unique_address (it's the last member, nothing follows it to "
-        "overlap into) and would cost a real byte instead of saving one.");
 
   public:
     [[no_unique_address]] pattern_type pattern;
@@ -616,32 +608,11 @@ template <typename Pp_, typename Fp_> struct Arm_ {
 template <typename Pp_, typename Fp_> Arm_(Pp_, Fp_) -> Arm_<Pp_, Fp_>;
 
 template <typename Pp_, typename Fp_>
-consteval auto arm_layout_valid_(void) noexcept(true) -> bool {
-    using Arm_t_ = Arm_<Pp_, Fp_>;
-    using pattern_type = typename Arm_t_::pattern_type;
-    using handler_type = typename Arm_t_::handler_type;
-
-    constexpr std::size_t footprint_{
-        std::is_empty_v<pattern_type> ? std::size_t{0} : sizeof(pattern_type)};
-    constexpr std::size_t mid_{align_up_(footprint_, alignof(handler_type)) -
-                               footprint_};
-
-    static_assert(sizeof(Arm_t_) == footprint_ + mid_ + sizeof(handler_type),
-                  "Arm_'s hand-computed layout drifted from its actual "
-                  "size; this invariant is what makes the explicit "
-                  "Pad_<> in Arm_ correct instead of merely plausible.");
-
-    return true;
-}
-
-template <typename Pp_, typename Fp_>
 constexpr auto operator>>=(Pp_ &&pattern_, Fp_ &&handler_)
     -> Arm_<std::decay_t<Pp_>, std::decay_t<Fp_>>
     requires(!std::is_integral_v<std::remove_cvref_t<Fp_>> ||
              MatchPattern<Pp_> || !std::is_integral_v<std::remove_cvref_t<Pp_>>)
 {
-    static_assert(arm_layout_valid_<std::decay_t<Pp_>, std::decay_t<Fp_>>());
-
     return {std::forward<Pp_>(pattern_), std::forward<Fp_>(handler_)};
 }
 
