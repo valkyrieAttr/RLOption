@@ -2,17 +2,17 @@
 
 # `rl::Option`
 
-`rl::Option<T, Ts...>` is a single-header C++26 value container. It stores either no value or exactly one object from a closed set of alternative types. Its API combines a primary-value interface, alternative-aware access, functional operations, and a pattern-matching dispatcher.
+`rl::Option<T, Ts...>` is a single-header C++26 value container. It stores either no value or exactly one object from a closed set of alternative types. Its API combines primary accessors, alternative-aware combinators, explicit typed access, and exhaustive pattern matching.
 
 This document describes the API implemented by `include/rl_option.hpp`. It intentionally distinguishes implemented behavior from behavior that may be familiar from `std::optional`, `std::variant`, `std::expected`, or Rust. Those types are useful points of comparison, but `rl::Option` is not a drop-in replacement for any of them.
 
 Besides the public API, this document also describes how the header actually implements that API internally — storage layout, discriminator values, dispatch mechanisms, and exception-safety ordering. Those internal descriptions are read directly off the current revision of `include/rl_option.hpp`. They are not part of the stable public contract: §16 already warns against depending on exact layout, and that warning applies to every internals paragraph added below as much as to the ones that were already there.
 
-> **Important:** the first template argument is the *primary type*. Most optional-style accessors and combinators operate only on that type. The remaining template arguments are secondary alternatives and must be handled explicitly or through `match()`.
+> **Important:** the first template argument is the *primary type*. Primary accessors such as `value()` and `unwrap()` are tied to the first type. Untargeted combinators operate across all alternatives when their callback supports the full pack; targeted overloads inspect one named type.
 
 **Header:** `include/rl_option.hpp`
 **Namespace:** `rl`
-**Language baseline:** c++26
+**Language baseline:** C++26
 **Dependencies:** standard library only
 **License identifier:** `GPL-3.0-or-later`
 
@@ -40,7 +40,8 @@ Besides the public API, this document also describes how the header actually imp
 18. [Known pitfalls and anti-patterns](#18-known-pitfalls-and-anti-patterns)
 19. [Complete API reference](#19-complete-api-reference)
 20. [Frequently asked questions](#20-frequently-asked-questions)
-21. [License](#21-license)
+21. [Test-suite map](#21-test-suite-map)
+22. [License](#22-license)
 
 ---
 
@@ -48,16 +49,15 @@ Besides the public API, this document also describes how the header actually imp
 
 ### 1.1 The state model
 
-`rl::Option<T, Ts...>` has one empty state and one engaged state for each listed alternative.
+`rl::Option<T, Ts...>` is an owning, manually discriminated sum type. It contains either no value (`None`) or exactly one active object whose type is one of the listed alternatives.
 
-| Type | States it can hold |
+| Type | Possible states |
 |---|---|
-| `rl::Option<T>` | `None` or a `T` |
-| `rl::Option<T, E>` | `None`, a `T`, or an `E` |
-| `rl::Option<A, B, C>` | `None`, an `A`, a `B`, or a `C` |
-| `rl::Option<A, B, C, Ts...>` | `None`, an `A`, a `B`, `C` or multiple alternatives types |
+| `rl::Option<T>` | `None` or `T` |
+| `rl::Option<T, E>` | `None`, `T`, or `E` |
+| `rl::Option<A, B, C>` | `None`, `A`, `B`, or `C` |
 
-An instance never intentionally holds two alternatives at once. The first template parameter is the primary type. Every later parameter is a secondary alternative.
+The first alternative, `T`, is the primary type. Later alternatives are secondary types. The distinction is intentional: ordinary accessors such as `value()` and `unwrap()` are statically tied to `T`; a secondary value must be named with a typed accessor or handled with `match()`.
 
 ```cpp
 #include "rl_option.hpp"
@@ -65,114 +65,65 @@ An instance never intentionally holds two alternatives at once. The first templa
 #include <print>
 #include <string>
 
-enum class ReadError {
-    not_found,
-    permission_denied
-};
+enum class ReadError { not_found, permission_denied };
 
-int main() {
-    rl::Option<int, ReadError, std::string> value(
-        rl::Some(std::string("configuration"))
-    );
+auto main() -> int {
+    rl::Option<int, ReadError, std::string> value = rl::Some<std::string>("configuration");
 
     std::println("engaged: {}", value.is_some());
-    std::println("holds int: {}", value.is_some<int>());
     std::println("holds string: {}", value.is_some<std::string>());
+    std::println("text: {}", value.unwrap<std::string>());
 }
 ```
-The example is engaged, but it does not hold the primary `int`. That distinction is central to the API.
 
-### 1.2 Primary and secondary alternatives
+### 1.2 The primary type and the alternatives
 
-The primary type is not merely the first item in a type list. It determines the behavior of the optional-style operations.
+Only the accessors that return the primary payload are primary-only. Most operations that inspect an engaged value are deliberately defined for every alternative.
 
-| Operation family | What it observes |
+| Operation family | Behavior with an active secondary |
 |---|---|
-| `is_some()`, `is_none()`, `operator bool()` | Whether any alternative is active |
-| `is_some<Q>()`, `unwrap<Q>()`, `as_*_ptr<Q>()` | The specifically named alternative `Q` |
-| `value()`, `unwrap()`, `expect()`, `operator*`, `operator->` | The primary type `T` only |
-| `map`, `and_then`, `map_or`, `map_or_else`, `map_or_transform` | The primary type `T`; `map_or_transform` also has a special `None` callback path |
-| `is_some_and`, `is_none_or`, `unwrap_or*` | The primary type `T` only |
-| `or_else` | Any engaged alternative; it runs the callback only for `None` |
-| `match()` | Every alternative symmetrically |
+| `is_some()`, `is_none()`, `operator bool()` | Reports whether any alternative is active |
+| `is_some<Q>()`, `unwrap<Q>()`, `as_*_ptr<Q>()` | Inspects or accesses the specifically named alternative |
+| `value()`, `unwrap()`, `expect()`, `operator*`, `operator->` | Requires the primary type `T`; wrong active type is a checked-access failure |
+| Untargeted `map`, `and_then`, `map_or*`, predicates | Considers every declared alternative; callback constraints must be met for every alternative |
+| Targeted `map<Q>`, `and_then<Q>`, `map_or*<Q>`, targeted predicates | Runs only for the named alternative; other alternatives follow the documented inactive path |
+| `or_else` | Runs only for `None`; any active alternative is preserved |
+| `match()` | Dispatches on `None` and every alternative |
 
-For example, when the secondary `std::string` alternative is active, `is_some()` is true but `value()` and `unwrap()` still try to access the primary `int`. Those primary accessors fail rather than returning the string.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("secondary"))
-    );
-
-    std::println("engaged: {}", value.is_some());
-    std::println("holds int: {}", value.is_some<int>());
-    std::println("holds string: {}", value.is_some<std::string>());
-
-    // This is a checked primary-type access and would abort:
-    // value.value();
-
-    std::println("secondary: {}", value.unwrap<std::string>());
-}
-```
-Use the explicitly typed overloads or `match()` whenever a secondary alternative may be active.
+An untargeted `map` does not silently erase an error or other secondary value. If every alternative is mappable, its result type includes the distinct callback result types. If the callback cannot accept every declared alternative, the call is rejected at compile time; use a targeted overload or an exhaustive `match()`.
 
 ### 1.3 Comparison with standard vocabulary types
 
-The library offers related capabilities, but its semantics are distinct.
-
 | Standard facility | Related `rl::Option` shape | Important difference |
 |---|---|---|
-| `std::optional<T>` | `rl::Option<T>` | `rl::Option<T>` has no default constructor; it is initialized with `Some`, `None`, or `Default`. |
-| `std::variant<Ts...>` | `rl::Option<T, Ts...>` | `rl::Option` adds an explicit empty state and treats the first alternative as primary for many operations. |
-| `std::expected<T, E>` | `rl::Option<T, E>` | This is not `std::expected` semantics. There is an additional `None` state, and primary-only combinators do not preserve a secondary error alternative. |
+| `std::optional<T>` | `rl::Option<T>` | Both represent a value or absence. This type has explicit `None` / `Some` vocabulary and no default constructor. |
+| `std::variant<Ts...>` | `rl::Option<T, Ts...>` | This type adds a distinct empty state; its first alternative also defines primary accessors. |
+| `std::expected<T, E>` | Sometimes `rl::Option<T, E>` | This type has three state categories: `None`, `T`, and `E`. It does not implement `expected`'s error-propagation contract. |
 
-For ordinary error propagation, `std::expected<T, E>` is generally the more direct standard abstraction. `rl::Option<T, E>` can represent a value, an error alternative, or no result, but callers must account for those three states explicitly.
+Use `std::expected<T, E>` when success and failure should be distinct and errors should propagate according to that standard type's contract. Use `rl::Option<T, E>` only when the extra empty state and this library's alternative semantics are useful.
 
 ---
 
+
+
 ## 2. Requirements and installation
 
-### 2.1 Language and library requirements
+### 2.1 C++26 requirement
 
-The header rejects translation units where `__cplusplus` is less than `202302L`.
+RLOption uses C++26 language and standard-library features throughout. It is not backward-compatible with C++23; use a C++26 compiler and standard library.
 
-The implementation uses c++26 language and library facilities, including:
-
-- explicit object parameters (`this Self&&`) for the ref-qualified `match()` implementation;
-- `std::forward_like`;
-- `std::unreachable`;
-- `std::views::zip`;
-- `std::println` and `<print>`;
-- concepts and constrained member functions;
-- `if consteval` / `if !consteval` syntax where exception-aware cleanup is selected.
-
-A compiler accepting `-std=c++26` is not, by itself, sufficient. Its standard library must also provide the c++26 library facilities used by the header, especially `<print>`, `std::views::zip`, and `std::forward_like`.
-
-The header is header-only. It does not require a separate `rl_option` object file or a project-specific shared library.
-
-### 2.2 C++26 support
-
-C++26 is the language baseline for the public API. 
-
-### 2.3 Compiler notes
+### 2.2 Compiler notes
 
 The supplied header does not define a tested compiler-version matrix. Select a compiler and standard library that implement the required C++26 features.
 
-The fenced C++ translation units in this README were individually syntax-checked with Clang 23.1 using `-std=c++26` against the supplied header. This records one verified compiler/standard-library configuration; it is not a guarantee that every compiler or standard-library combination is supported.
+The README examples were syntax-checked with Clang 23.1 and `-std=c++26` against the supplied header. This records one verified configuration, not a guarantee for every compiler and library combination.
 
-The non-reflection diagnostic fallback uses `__PRETTY_FUNCTION__`, which is a compiler extension commonly provided by GCC and Clang. The header does not provide a corresponding `__FUNCSIG__` fallback in the supplied revision. Do not assume that a non-reflection MSVC build is supported without compiling it against the actual toolchain.
-
-### 2.4 Add the header to a project
+### 2.3 Add the header to a project
 
 Place the header at `include/rl_option.hpp`, then compile a translation unit that includes it.
 
-```bash
-g++ -std=c++26 -Wall -Wextra -pedantic -I./include main.cpp -o app
+```sh
+clang++ -std=c++26 -Wall -Wextra -pedantic -I./include main.cpp -o app
 ./app
 ```
 
@@ -183,33 +134,25 @@ A minimal translation unit:
 
 #include <print>
 
-int main() {
-    rl::Option<int> count(rl::Some(42));
+auto main() -> int {
+    rl::Option<int> count = rl::Some<int>(42);
     std::println("{}", count.unwrap());
 }
 ```
-### 2.5 Using the header with Compiler Explorer
 
-For a Compiler Explorer instance that has the header installed on its include path, use:
+### 2.4 Using the header with Compiler Explorer
 
-```text
--std=c++26 -Wall -Wextra -pedantic
+In Compiler Explorer, open the Library tab, search for `rl_option`, and select the `trunk` version. Compiler Explorer adds the library's include path. Then include the header and select a compiler and standard library with the required C++26 support:
+
+```cpp
+#include "rl_option.hpp"
 ```
 
-If the instance is self-hosted, add the directory containing `rl_option.hpp` to the compiler's include path, for example with `-I/path/to/include`.
-
-A public Compiler Explorer session cannot resolve an arbitrary path on your own computer. In that environment, make the header available through the session's supported library mechanism or include its contents in the source being compiled. Compiler and standard-library availability varies by selected toolchain; do not assume that every listed compiler supports every c++26 library facility used here.
-
-### 2.6 Practical considerations for publishing this on Compiler Explorer
-
-Sharing a Compiler Explorer link puts the header in front of readers who did not choose, and may not know, which compiler and standard-library combination the link happens to use. A few consequences follow directly from §2.1–§2.3:
-
-- "Accepts `-std=c++26`" is necessary but not sufficient. `<print>`, `std::views::zip`, and `std::forward_like` landed in different standard-library releases on different vendors' timelines, so two compilers that both claim c++26 support can still disagree on whether this header compiles at all. Pin an exact compiler version in the shared link's description rather than a bare "any c++26 compiler" claim.
-- The reflection-vs-`__PRETTY_FUNCTION__` fork in §2.2 and §16.5 is picked per translation unit based on feature-test macros, not by anything this library controls. A reader who forks the link onto a different compiler on the same site can get differently formatted (but behaviorally identical) abort diagnostics without changing a single line of their own code. Don't build an expected-output comparison in a Compiler Explorer "diff" view around the exact text of an abort message (see §18.8).
-- Compiler Explorer's compiler list changes over time, independent of this header's own revisions. A link that worked when it was published can stop compiling months later purely because the pinned compiler version was retired from the site, with nothing in this header having changed. If the library is meant to be a long-lived reference example, periodically re-open and re-save the link rather than treating "it compiled once" as a permanent property.
-- Every example in this README was written to compile standalone with a single `#include "rl_option.hpp"`. When adapting one for a Compiler Explorer session that only has the header, not the file tree, around it, keep that property: don't let an example quietly depend on a previous example's `using` declarations or helper functions that live in an earlier, unshared snippet.
+Set the compiler option to `-std=c++26` if the selected compiler does not already use that language mode.
 
 ---
+
+
 
 ## 3. The vocabulary types
 
@@ -226,14 +169,14 @@ Its constructors are explicit:
 
 #include <string>
 
-int main() {
-    rl::Some<int> first(42);
-    auto second = rl::Some(42);
+auto main() -> int {
+    auto first = rl::Some<int>(42);
+    auto second = rl::Some<int>(42);
 
-    rl::Some<std::string> third(std::string("ready"));
+    auto third = rl::Some<std::string>("ready");
 
-    rl::Option<int> count(first);
-    rl::Option<std::string> label(third);
+    rl::Option<int> count = first;
+    rl::Option<std::string> label = third;
 }
 ```
 `get()` preserves the wrapper's value category. An lvalue wrapper exposes an lvalue reference; an rvalue wrapper exposes an rvalue reference:
@@ -245,11 +188,11 @@ int main() {
 #include <string>
 #include <utility>
 
-int main() {
-    rl::Some<std::string> wrapped(std::string("ready"));
+auto main() -> int {
+    auto wrapped = rl::Some<std::string>("ready");
     wrapped.get().append(" now");
 
-    const rl::Some<std::string> fixed(std::string("read-only"));
+    const auto fixed = rl::Some<std::string>("read-only");
     const std::string& view = fixed.get();
 
     std::string extracted = std::move(wrapped).get();
@@ -260,16 +203,16 @@ The class provides:
 
 | Member | Meaning |
 |---|---|
-| `Some()` | Default-constructs the wrapped `T`; available only when `T` is default-constructible |
-| `Some(const T&)` | Copies a `T`; available only when `T` is copy-constructible |
-| `Some(T&&)` | Moves a `T`; available only when `T` is move-constructible |
+| `Some<T>()` | Default-constructs the wrapped `T`; available only when `T` is default-constructible |
+| `Some<T>(const T&)` | Copies a `T`; available only when `T` is copy-constructible |
+| `Some<T>(T&&)` | Moves a `T`; available only when `T` is move-constructible |
 | `get() const&` | Returns `const T&` |
 | `get() &` | Returns `T&` |
 | `get() &&` | Returns `T&&` |
 | `get() const&&` | Returns `const T&&` |
 | `operator==(Some<T>, Some<T>)` | Compares wrapped values when `T` is equality-comparable |
 
-`Some<T>` is also a pattern for matching an engaged value equal to the wrapped value. See the alignment constraint in [§6.5](#65-value-patterns-somevalue-and-ordinary-comparison-patterns).
+`Some<T>` is also a pattern for matching an engaged value equal to the wrapped value. See §6.5 for the pattern's behavior and a type-based predicate class.
 
 ### 3.2 `rl::None`: explicitly empty
 
@@ -280,8 +223,8 @@ The class provides:
 
 #include <print>
 
-int main() {
-    rl::Option<int> value(rl::None);
+auto main() -> int {
+    rl::Option<int> value = rl::None;
 
     std::println("empty: {}", value.is_none());
 
@@ -314,10 +257,10 @@ struct NoDefault {
     int value;
 };
 
-int main() {
-    rl::Option<int> number(rl::Default);
-    rl::Option<std::string> text(rl::Default);
-    rl::Option<NoDefault, std::string> fallback(rl::Default);
+auto main() -> int {
+    rl::Option<int> number = rl::Default;
+    rl::Option<std::string> text = rl::Default;
+    rl::Option<NoDefault, std::string> fallback = rl::Default;
 
     std::println("number: {}", number.unwrap());
     std::println("text is empty: {}", text.unwrap().empty());
@@ -331,8 +274,8 @@ The `Default` tag is also available as a pattern. As a match pattern, it compare
 
 #include <print>
 
-int main() {
-    rl::Option<int> value(rl::Some(0));
+auto main() -> int {
+    rl::Option<int> value = rl::Some<int>(0);
 
     value.match(
         rl::None >>= [] {
@@ -360,8 +303,8 @@ For an engaged value the handler may accept the matched value or be nullary. For
 
 #include <print>
 
-int main() {
-    rl::Option<int> value(rl::None);
+auto main() -> int {
+    rl::Option<int> value = rl::None;
 
     value.match(
         rl::Wild >>= [](auto&&... arguments) {
@@ -389,10 +332,8 @@ A `SomeAny` arm therefore does not replace the required `None` coverage.
 #include <string>
 #include <type_traits>
 
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("payload"))
-    );
+auto main() -> int {
+    rl::Option<int, std::string> value = rl::Some<std::string>("payload");
 
     value.match(
         rl::None >>= [] {
@@ -412,27 +353,25 @@ int main() {
 ```
 For multiple alternatives, the handler should generally be a generic callable or an overload set that accepts every alternative.
 
-### 3.6 `rl::Where(predicate)`: name a guard
+### 3.6 Predicate lambdas as guards
 
-`Where` stores a predicate and marks the arm as a guard. A bare predicate callable can also be used directly as a pattern; `Where` is a named wrapper for readability.
-
-The predicate is tested against a `const` view of the active alternative. The handler receives the matched alternative with the value category of the `Option` expression.
+A predicate lambda can be used directly as a pattern. It is tested against a `const` view of the active alternative; the handler receives the matched alternative with the value category of the `Option` expression.
 
 ```cpp
 #include "rl_option.hpp"
 
 #include <print>
 
-int main() {
-    rl::Option<int> value(rl::Some(18));
+auto main() -> int {
+    rl::Option<int> value = rl::Some<int>(18);
 
     value.match(
         rl::None >>= [] {
             std::println("no value");
         },
-        rl::Where([](const int& number) {
+        [](const int& number) {
             return number >= 18;
-        }) >>= [](int number) {
+        } >>= [](int number) {
             std::println("at least 18: {}", number);
         },
         rl::Wild >>= [](int number) {
@@ -443,7 +382,7 @@ int main() {
 ```
 A predicate's being considered applicable to a type is a compile-time property. The predicate's runtime result is not proven at compile time.
 
-Internally, `Where(pred)` is nothing more than `Where_<std::decay_t<Pred>>{pred}` — a one-member struct holding the predicate plus a nested `where_tag_` type alias that the pattern-matching machinery uses to recognize it as a named guard rather than an ordinary callable pattern. A bare predicate lambda used directly as a pattern is matched the same way at runtime; the only thing `Where` adds is that `where_tag_` marker, which exists purely so the intent "this is deliberately a guard" is legible both to a reader and to the small number of `if constexpr` branches in the matcher that special-case guards.
+The matcher uses compile-time invocability to determine which alternatives a predicate can test. At runtime it evaluates that predicate against each applicable active value; a false result lets dispatch continue to the next arm. Exhaustiveness still requires a fallback for any value the predicate may reject.
 
 ---
 
@@ -451,50 +390,38 @@ Internally, `Where(pred)` is nothing more than `Where_<std::decay_t<Pred>>{pred}
 
 ### 4.1 There is no default constructor
 
-`Option()` is explicitly deleted. A declaration that attempts to default-construct an object is ill-formed:
-
-```cpp
-// rl::Option<int> value;  // Error: Option() is deleted.
-```
-There is no default-empty state hidden behind either an omitted initializer or
-an empty initializer list. Call an actual constructor with the state tag you
-intend.
-
-Choose the desired initial state explicitly:
+`Option()` is explicitly deleted. Initialize each object with the state you mean:
 
 ```cpp
 #include "rl_option.hpp"
 
-int main() {
-    rl::Option<int> empty(rl::None);
-    rl::Option<int> zero(rl::Default);
-    rl::Option<int> answer(rl::Some(42));
+auto main() -> int {
+    rl::Option<int> empty = rl::None;
+    rl::Option<int> zero = rl::Default;
+    rl::Option<int> answer = rl::Some<int>(42);
 }
 ```
-`Default` is a tag-based construction request. It is not a default constructor.
+
+`Default` is a tag-based request to construct a value; it is not a default-empty state.
 
 ### 4.2 Construct from `Some<T>`
 
-Construction from `Some<T>` is available for the primary type and for each declared secondary type.
+`Some<T>` names the alternative to construct. It is supported for the primary and all declared secondary alternatives.
 
 ```cpp
 #include "rl_option.hpp"
 
 #include <string>
 
-int main() {
-    rl::Option<int> count(rl::Some(7));
-
-    rl::Option<int, std::string> message(
-        rl::Some(std::string("ready"))
-    );
-
-    rl::Option<int, std::string> code(
-        rl::Some<int>(200)
-    );
+auto main() -> int {
+    rl::Option<int> count = rl::Some<int>(7);
+    rl::Option<std::string> default_message = rl::Some<std::string>({});
+    rl::Option<int, std::string> message = rl::Some<std::string>("ready");
+    rl::Option<int, std::string> code = rl::Some<int>(200);
 }
 ```
-Use the explicit `Some<T>` spelling when the intended alternative should be unmistakable.
+
+Use `Some<T>` when the alternative choice should be explicit at the call site. The value constructors of `Some<T>` are explicit, while `Option`'s constructor from `Some<T>` is non-explicit. This allows copy initialization such as `rl::Option<T> value = rl::Some<T>(...)` while keeping creation of the `Some<T>` wrapper intentional.
 
 ### 4.3 Construct from `None` or `Default`
 
@@ -503,116 +430,63 @@ Use the explicit `Some<T>` spelling when the intended alternative should be unmi
 
 #include <string>
 
-int main() {
-    rl::Option<int, std::string> absent(rl::None);
-    rl::Option<int> initialized(rl::Default);
+auto main() -> int {
+    rl::Option<int, std::string> absent = rl::None;
+    rl::Option<int> initialized = rl::Default;
 }
 ```
-`None` always works for a valid `Option`. `Default` works only if the primary type or at least one secondary alternative is default-constructible.
 
-### 4.4 A bare value is not an `Option` constructor argument
+`None` works for any valid specialization. `Default` always engages a default-constructible alternative: the primary if possible, otherwise the first default-constructible secondary.
 
-The supplied header does **not** declare a constructor from an arbitrary payload value.
+### 4.4 Bare payload construction is not supported
 
-These forms do not compile:
-
-```text
-// rl::Option<int> a(42);
-// rl::Option<int> b = 42;
-// rl::Option<int, std::string> c(std::string("text"));
-```
-
-Construct with `Some` instead:
+An engaged `Option` must be constructed from `rl::Some<T>`. The header has no converting constructor from an unwrapped payload, so `Option<int, std::string> value = "text";` is ill-formed. Wrap the payload to make the engaged state and intended alternative explicit:
 
 ```cpp
 #include "rl_option.hpp"
 
 #include <string>
 
-int main() {
-    rl::Option<int> a(rl::Some(42));
-    rl::Option<int, std::string> b(
-        rl::Some(std::string("text"))
-    );
+auto main() -> int {
+    rl::Option<int> a = rl::Some<int>(42);
+    rl::Option<int, std::string> b = rl::Some<std::string>("text");
 }
 ```
-This distinction matters in return statements too. A function returning `Option<int>` must return `Some(value)` or an already-constructed `Option<int>`; returning a bare `int` is not supported by an `Option` converting constructor.
 
-### 4.5 Assign a bare value to an existing `Option`
+Copy initialization is supported because the `Option` constructor from `Some<T>` is non-explicit. The `Some<T>` wrapper's value constructors are explicit, so the payload still has to be wrapped deliberately.
 
-The assignment operator does accept a bare payload, but this is an assignment overload, not a constructor. The object must already exist. Do not read the assignments below as examples of constructing an `Option` from a bare value: that constructor does not exist. It selects the target alternative using the following rule:
+### 4.5 Assign a value to an existing `Option`
 
-1. If exactly one alternative has the same type as the assigned expression after removing cv- and reference-qualifiers, use that exact alternative.
-2. Otherwise, if exactly one alternative is constructible from the assigned expression, use that alternative.
-3. If there is no viable alternative or more than one constructible alternative, the assignment is rejected.
+Bare-value assignment is also supported. It selects a unique exact alternative if available, otherwise a unique constructible alternative. No viable or multiple viable alternatives make the assignment ill-formed.
 
 ```cpp
 #include "rl_option.hpp"
 
 #include <string>
 
-int main() {
-    rl::Option<int, std::string> value(rl::None);
+auto main() -> int {
+    rl::Option<int, std::string> value = rl::None;
 
-    value = rl::Some<int>(9);           // Explicit alternative selection.
-    value = rl::Some<std::string>("x"); // Explicit alternative selection.
+    value = rl::Some<int>(9);
+    value = rl::Some<std::string>("x");
     value = rl::None;
     value = rl::Default;
 }
 ```
-An ambiguous assignment is rejected. For example, if both `int` and `long` can be constructed from a `short`, the target cannot be chosen uniquely:
 
-```cpp
-#include "rl_option.hpp"
+For example, assigning a `short` to `Option<int, long>` is ambiguous because both alternatives can be constructed from it. Spell the intended alternative with `Some<long>(...)` or `Some<int>(...)`.
 
-int main() {
-    rl::Option<int, long> value(rl::None);
-
-    // value = short(5);            // Error: int and long are both viable.
-    value = rl::Some<long>(5);      // Explicitly select long.
-}
-```
-Internally this bare-value assignment path does something a naive "reset, then construct" implementation would not: when the deduced target alternative is movable, it first constructs a temporary of that target type *from the assigned expression*, while whatever alternative was previously active is still alive and untouched, and only afterwards resets the old alternative and move-constructs the real storage from that temporary. See [§16.3](#163-exception-safety-during-state-changes) for why this ordering matters and what it protects against.
+When the selected target is movable, the implementation first constructs a temporary target from the incoming expression while the old active object is still alive. Only after that succeeds does it replace the stored alternative. This ordering supports self-aliasing inputs and avoids destroying the old value before a throwing conversion has completed; see §16.3.
 
 ### 4.6 Copy and move operations
 
-Copy construction is available only when every alternative is copy-constructible. Move construction is available only when every alternative is move-constructible.
+Copy construction is available only when every alternative is copy-constructible. Move construction is available only when every alternative is move-constructible. Assignment has corresponding requirements for each alternative's assignment capabilities. The implementation conditionally preserves trivial special members.
 
-Copy assignment additionally requires every alternative to be copy-assignable. Move assignment additionally requires every alternative to be move-assignable.
-
-The implementation conditionally preserves trivial copy/move operations where the alternatives permit it.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <memory>
-#include <type_traits>
-#include <utility>
-
-struct MoveOnly {
-    explicit MoveOnly(int value)
-        : value(std::make_unique<int>(value)) {}
-
-    std::unique_ptr<int> value;
-};
-
-int main() {
-    using Value = rl::Option<MoveOnly>;
-
-    static_assert(!std::is_copy_constructible_v<Value>);
-    static_assert(std::is_move_constructible_v<Value>);
-
-    Value source(rl::Some(MoveOnly(7)));
-    Value destination(std::move(source));
-
-    // Moving an Option does not itself reset the source.
-    // The source remains engaged with a moved-from MoveOnly.
-    (void)destination;
-}
-```
-When both sides of a copy or move *assignment* already have the same alternative active, the implementation assigns directly onto the existing object (falling back to destroy-and-reconstruct only if that alternative type isn't copy-/move-assignable) rather than always tearing down and rebuilding; when the active alternatives differ, or either side is `None`, it resets the destination and constructs the new alternative from scratch. See [§16.1](#161-storage-model) for the dispatch mechanism behind this.
+Moving an `Option` does not by itself reset the source. The source remains in its original state with a moved-from payload when the active payload was moved.
 
 ---
+
+
 
 ## 5. A staged tutorial
 
@@ -630,7 +504,7 @@ A parser that may fail without needing to distinguish failure causes can return 
 #include <string_view>
 #include <system_error>
 
-rl::Option<int> parse_integer(std::string_view text) {
+auto parse_integer(std::string_view text) -> rl::Option<int> {
     if (text.empty()) {
         return rl::None;
     }
@@ -646,10 +520,10 @@ rl::Option<int> parse_integer(std::string_view text) {
         return rl::None;
     }
 
-    return rl::Some(value);
+    return rl::Some<int>(value);
 }
 
-int main() {
+auto main() -> int {
     const auto parsed = parse_integer("42");
 
     if (parsed.is_some()) {
@@ -659,7 +533,7 @@ int main() {
     }
 }
 ```
-The function returns `None` on failure and `Some(value)` on success. It does not return a bare integer.
+The function returns `None` on failure and `Some<T>(value)` on success. It does not return a bare integer.
 
 ### 5.2 Stage 2: validate with `and_then`
 
@@ -673,7 +547,7 @@ The function returns `None` on failure and `Some(value)` on success. It does not
 #include <string_view>
 #include <system_error>
 
-rl::Option<int> parse_integer(std::string_view text) {
+auto parse_integer(std::string_view text) -> rl::Option<int> {
     if (text.empty()) {
         return rl::None;
     }
@@ -689,18 +563,18 @@ rl::Option<int> parse_integer(std::string_view text) {
         return rl::None;
     }
 
-    return rl::Some(value);
+    return rl::Some<int>(value);
 }
 
-rl::Option<int> require_positive(int value) {
+auto require_positive(int value) -> rl::Option<int> {
     if (value <= 0) {
         return rl::None;
     }
 
-    return rl::Some(value);
+    return rl::Some<int>(value);
 }
 
-int main() {
+auto main() -> int {
     const auto positive = parse_integer("42").and_then(require_positive);
 
     std::println("positive: {}", positive.unwrap_or(-1));
@@ -720,7 +594,7 @@ int main() {
 #include <string_view>
 #include <system_error>
 
-rl::Option<int> parse_integer(std::string_view text) {
+auto parse_integer(std::string_view text) -> rl::Option<int> {
     if (text.empty()) {
         return rl::None;
     }
@@ -736,18 +610,18 @@ rl::Option<int> parse_integer(std::string_view text) {
         return rl::None;
     }
 
-    return rl::Some(value);
+    return rl::Some<int>(value);
 }
 
-rl::Option<int> require_positive(int value) {
+auto require_positive(int value) -> rl::Option<int> {
     if (value <= 0) {
         return rl::None;
     }
 
-    return rl::Some(value);
+    return rl::Some<int>(value);
 }
 
-int main() {
+auto main() -> int {
     const auto doubled = parse_integer("21")
         .and_then(require_positive)
         .map([](int value) {
@@ -757,7 +631,7 @@ int main() {
     std::println("result: {}", doubled.unwrap_or(-1));
 }
 ```
-If the receiver is empty, or a secondary alternative is active, `map` returns an empty `Option<U>`. It does not carry secondary alternatives into the new result.
+This stage uses `Option<int>`, so its only engaged alternative is `int`. For a multi-alternative Option, untargeted `map` handles all alternatives only when the callback supports each one; a targeted overload can select a single alternative.
 
 ### 5.4 Stage 4: choose an eager or lazy fallback
 
@@ -769,8 +643,8 @@ Use `unwrap_or` for an already available fallback and `unwrap_or_else` for a fal
 #include <print>
 #include <string>
 
-int main() {
-    rl::Option<std::string> missing(rl::None);
+auto main() -> int {
+    rl::Option<std::string> missing = rl::None;
 
     const std::string eager = missing.unwrap_or(std::string("fallback"));
 
@@ -799,9 +673,9 @@ enum class ParseError {
     malformed_input
 };
 
-rl::Option<int, ParseError> parse_with_error(std::string_view text) {
+auto parse_with_error(std::string_view text) -> rl::Option<int, ParseError> {
     if (text.empty()) {
-        return rl::Some(ParseError::empty_input);
+        return rl::Some<ParseError>(ParseError::empty_input);
     }
 
     int value = 0;
@@ -812,13 +686,13 @@ rl::Option<int, ParseError> parse_with_error(std::string_view text) {
     );
 
     if (error != std::errc{} || end != text.data() + text.size()) {
-        return rl::Some(ParseError::malformed_input);
+        return rl::Some<ParseError>(ParseError::malformed_input);
     }
 
-    return rl::Some(value);
+    return rl::Some<int>(value);
 }
 
-int main() {
+auto main() -> int {
     const auto result = parse_with_error("42");
 
     result.match(
@@ -846,607 +720,48 @@ This version handles `None`, `ParseError`, and `int` separately. The guard predi
 
 ### 6.1 Forming an arm with `>>=`
 
-An arm is formed by applying the overloaded `>>=` operator to a pattern and a handler:
+An arm is formed by applying the imported `>>=` operator to a pattern and a handler:
 
-```text
+```cpp
 pattern >>= handler
 ```
 
-The header imports this operator into the global namespace so the infix form can be used without qualifying the operator name. The pattern and handler are stored together in an internal arm object.
-
-Arms are evaluated in source order. The first arm that matches is selected.
+The arm stores its pattern and handler. For an engaged alternative, arms are considered in source order and the first runtime-matching arm is selected. `None` dispatch has a dedicated path described in §16.4.
 
 ### 6.2 Supported pattern forms
 
 | Pattern | Matches |
 |---|---|
-| `rl::None` | The empty state only |
-| `rl::Wild` | The empty state and all engaged alternatives |
+| `rl::None` | The empty state |
+| `rl::Wild` | `None` and every engaged alternative |
 | `rl::SomeAny` | Every engaged alternative, but not `None` |
-| `rl::Default` | An active alternative equal to its default-constructed value, when that alternative is default-constructible and equality-comparable |
-| `rl::Some<T>(value)` | An active alternative of exactly type `T` whose value compares equal to `value` |
-| `rl::Where(predicate)` | An alternative for which the predicate is applicable and returns true |
-| A predicate callable | Same guard behavior as `Where(predicate)` |
-| An equality-comparable value | An active alternative for which `active_value == pattern` is valid and true |
-| A nullary boolean callable | A guard that returns the same boolean result for each applicable active alternative |
+| `rl::Default` | An active alternative equal to its default-constructed value when construction and equality are supported |
+| `rl::Some<T>(value)` | An active value of exactly `T` equal to `value` |
+| A predicate lambda or callable | An applicable alternative for which the predicate returns true |
+| An equality-comparable value | An active alternative equal to that value when the comparison is valid |
+| A nullary boolean callable | A guard with the same result for each applicable active alternative |
 
-A plain `bool` pattern is treated as a boolean value pattern for a `bool` alternative and as a constant guard for other alternative types.
+For `bool` alternatives, use `rl::True` and `rl::False` marker patterns when proving both values at compile time. A raw `true` or `false` pattern can test a runtime value, but does not establish both bool cases for exhaustiveness.
 
 ### 6.3 Handler forms
 
-For an engaged state, the handler may:
+For an engaged state, a handler may accept the active alternative, accept no arguments, or be a non-callable object convertible to the deduced result type. A handler covering several alternatives must be valid for each one.
 
-- accept the matched alternative;
-- accept no arguments; or
-- be a non-callable object convertible to the deduced dispatch result type.
+For `None`, the selected handler is invoked without an argument. A handler for `Wild` must therefore support both a nullary call and any engaged calls it may receive, unless an explicit `None` arm takes precedence.
 
-For `None`, the handler is invoked without an argument. A `Wild` handler must therefore support the empty-state call as well if no earlier `None` arm handles it.
+### 6.4 Exhaustiveness is a compile-time contract
 
-For a multi-type `Option`, a catch-all handler must be valid for every alternative it covers. A generic lambda is usually the most direct handler:
+A well-formed `match()` must provide coverage for `None` and every declared alternative. Coverage is type-based: each alternative needs at least one arm whose pattern could apply to it. A generic `SomeAny` handler can cover all engaged alternatives; `Wild` can cover both engaged values and `None`. Exhaustiveness does not mean that a separate arm is required for each type.
 
-```cpp
-#include "rl_option.hpp"
+For a `bool` alternative, the compile-time check requires both cases (`rl::True` and `rl::False`) or a suitable catch-all. A guard that merely accepts `bool` does not prove both values.
 
-#include <print>
-#include <string>
-#include <type_traits>
+A type-compatible guard can still return false for the current value. If every applicable guard returns false at runtime and no later arm matches, `match()` prints a diagnostic and aborts. Put an unconditional fallback after guards unless their joint value coverage is guaranteed.
 
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("text"))
-    );
+### 6.5 Value patterns and class-based type patterns
 
-    value.match(
-        rl::None >>= [] {
-            std::println("empty");
-        },
-        rl::SomeAny >>= [](auto&& active) {
-            using Active = std::remove_cvref_t<decltype(active)>;
+`Some<T>(value)` is a runtime equality pattern. It works with ordinary handlers; the current arm layout does not impose a special handler-alignment restriction.
 
-            if constexpr (std::same_as<Active, int>) {
-                std::println("integer: {}", active);
-            } else {
-                std::println("string: {}", active);
-            }
-        }
-    );
-}
-```
-### 6.4 Type coverage is checked; runtime guard success is not
-
-`match()` performs compile-time checks that:
-
-1. at least one arm covers `None`;
-2. the primary type has a covering arm; and
-3. every secondary alternative has a covering arm.
-
-A typed guard is considered a covering arm for an alternative when the guard is invocable with that alternative's `const` view. The compiler cannot prove that the predicate will return true for a particular runtime value.
-
-If all applicable runtime guards return false and no later arm matches, `match()` prints a diagnostic and calls `std::abort()`.
-
-Therefore, a complete match should normally end with a suitable catch-all arm after more specific guards.
-
-### 6.5 Value patterns: `Some(value)` and ordinary comparison patterns
-
-There is an implementation-specific alignment constraint in the supplied header. Each arm statically requires:
-
-```text
-alignof(handler_type) >= alignof(pattern_type)
-```
-
-`Some<T>` is declared with `alignas(T)`. A raw value pattern such as an `int` also has the alignment of its type. Typical lambda closure types often have alignment 1. Consequently, a value pattern for an ordinarily aligned type can fail the arm's `static_assert` when paired with a typical lambda handler.
-
-The following example provides a handler type with sufficient alignment:
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-struct alignas(int) ExactZero {
-    void operator()() const {
-        std::println("the value is zero");
-    }
-};
-
-int main() {
-    rl::Option<int> value(rl::Some(0));
-
-    value.match(
-        rl::None >>= [] {
-            std::println("empty");
-        },
-        rl::Some(0) >>= ExactZero(),
-        rl::Wild >>= [](int number) {
-            std::println("other value: {}", number);
-        }
-    );
-}
-```
-For ordinary matching, `Where` is generally easier to use because a typical predicate lambda and a typical handler lambda have compatible alignment:
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-int main() {
-    rl::Option<int> value(rl::Some(42));
-
-    value.match(
-        rl::None >>= [] {
-            std::println("empty");
-        },
-        rl::Where([](const int& number) {
-            return number == 42;
-        }) >>= [] {
-            std::println("matched 42");
-        },
-        rl::Wild >>= [](int number) {
-            std::println("other: {}", number);
-        }
-    );
-}
-```
-
-Alternatively, it is possible to use basic lambdas in place of Where. It is mostly user-preference to keep it that way. Mind your preference.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-int main() {
-    rl::Option<int> value(rl::Some(42));
-
-    value.match(
-        rl::None >>= [] {
-            std::println("empty");
-        },
-        [](const int& number) {
-            return number == 42;
-        } >>= [] {
-            std::println("matched 42");
-        },
-        rl::Wild >>= [](int number) {
-            std::println("other: {}", number);
-        }
-    );
-}
-```
-This alignment rule is not a lint or a style guideline — it is a hard `static_assert` inside `Arm_<Pattern, Handler>` itself, and it exists because of how `Arm_` is laid out. `Arm_` stores the pattern, just enough mid-padding to bring the handler up to its own alignment boundary, and then the handler, in that order, relying on the handler to supply the struct's overall trailing alignment. A pattern with *stricter* alignment than its handler would need padding bytes *after* the handler as well, and because the pattern is stored with `[[no_unique_address]]`, a `Pad_<>` placed after the handler would be the very last member of the class — with nothing following it to overlap into, `[[no_unique_address]]` cannot make that trailing padding free. Rather than silently pay for a byte the layout doesn't otherwise need, the header refuses the combination at compile time. See [§16.4](#164-match-dispatch-mechanics) for the rest of how arms are laid out and dispatched.
-
----
-
-## 7. State queries
-
-All state queries are `constexpr` and inspect the active-state discriminator. The relevant functions are:
-
-| Member | Meaning |
-|---|---|
-| `explicit operator bool() const` | True when any alternative is engaged |
-| `is_some() const` | True when any alternative is engaged |
-| `has_any_engaged_value() const` | Synonym for `is_some()` |
-| `is_none() const` | True only for the empty state |
-| `is_some<Q>() const` | True only when alternative `Q` is active |
-| `is_default() const` | True when the primary value is equal to `T{}` |
-
-`is_default()` is available only when the primary type is both default-constructible and equality-comparable. It returns false for `None` and for every secondary alternative.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int, std::string> value(rl::Some(std::string("secondary")));
-
-    std::println("bool: {}", static_cast<bool>(value));
-    std::println("is_some: {}", value.is_some());
-    std::println("has value: {}", value.has_any_engaged_value());
-    std::println("is_none: {}", value.is_none());
-    std::println("is int: {}", value.is_some<int>());
-    std::println("is string: {}", value.is_some<std::string>());
-
-    rl::Option<int> zero(rl::Some(0));
-    rl::Option<int> nonzero(rl::Some(7));
-    rl::Option<int> empty(rl::None);
-
-    std::println("zero is default: {}", zero.is_default());
-    std::println("seven is default: {}", nonzero.is_default());
-    std::println("empty is default: {}", empty.is_default());
-}
-```
-### 7.1 `is_some_and(predicate)`
-
-`is_some_and` returns true only when the primary alternative is active and the predicate returns true.
-
-It accepts a predicate invocable with the receiver's corresponding primary-value category:
-
-- `const T&` on `const&`;
-- `T&` on `&`;
-- `T&&` on `&&`.
-
-The `&&` overload consumes and resets an active primary value when the predicate call exits, including during exception unwinding. This happens whether the predicate returns `true` or `false`. If the state is `None` or a secondary alternative, the predicate is not called and the object is not consumed.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-int main() {
-    rl::Option<int> age(rl::Some(21));
-
-    const bool is_adult = age.is_some_and([](int value) {
-        return value >= 18;
-    });
-
-    std::println("adult: {}", is_adult);
-}
-```
-### 7.2 `is_none_or(predicate)`
-
-`is_none_or` returns true when the state is `None`, or when the primary alternative is active and the predicate returns true.
-
-A secondary alternative is **not** treated as `None`; for a secondary-active `Option`, `is_none_or` returns false. On an rvalue receiver, an active primary value is consumed and the `Option` is reset after the predicate call regardless of its boolean result. `None` is already empty, and a secondary alternative is left untouched.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int, std::string> absent(rl::None);
-    rl::Option<int, std::string> primary(rl::Some(12));
-    rl::Option<int, std::string> secondary(
-        rl::Some(std::string("not primary"))
-    );
-
-    const auto below_limit = [](int value) {
-        return value <= 20;
-    };
-
-    std::println("none: {}", absent.is_none_or(below_limit));
-    std::println("primary: {}", primary.is_none_or(below_limit));
-    std::println("secondary: {}", secondary.is_none_or(below_limit));
-}
-```
----
-
-## 8. Reading values and handling absence
-
-### 8.1 Checked primary access: `value()`, `unwrap()`, and `expect()`
-
-These functions access only the primary type `T`.
-
-| Member | Lvalue result | Rvalue result |
-|---|---|---|
-| `value()` | `T&` or `const T&` | `T&&` |
-| `unwrap()` | `T&` or `const T&` | `T` by value |
-| `expect(message)` | `T&` or `const T&` | `T` by value |
-
-If the primary alternative is not active, these functions print a diagnostic to `stderr` and call `std::abort()`.
-
-`value() &&` returns an rvalue reference and does not itself reset the `Option`.
-
-By contrast, `unwrap() &&` and `expect() &&` extract by value and reset the source after a successful extraction — "successful" is doing real work here, not just describing the common case; see [§16.3](#163-exception-safety-during-state-changes) for what happens if the extraction itself throws.
-
-The pointer and dereference operators provide the familiar optional-style interface:
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<std::string> name(
-        rl::Some(std::string("Ada Lovelace"))
-    );
-
-    std::string& mutable_name = name.value();
-    mutable_name.append(" (mathematician)");
-
-    std::println("length through operator*: {}", (*name).size());
-    std::println("length through operator->: {}", name->size());
-
-    const std::string& checked = name.expect("name must be present");
-    std::println("{}", checked);
-}
-```
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-#include <utility>
-
-int main() {
-    rl::Option<std::string> value(
-        rl::Some(std::string("payload"))
-    );
-
-    std::string extracted = std::move(value).unwrap();
-
-    std::println("extracted: {}", extracted);
-    std::println("source is empty: {}", value.is_none());
-}
-```
-### 8.2 Typed access: `unwrap<Q>()`
-
-`unwrap<Q>()` accesses a specifically named alternative, including a secondary alternative.
-
-- On `const&`, it returns `const Q&`.
-- On `&`, it returns `Q&`.
-- On `&&`, it returns `Q` by value and resets the source after successful extraction.
-
-The requested `Q` must be one of the declared alternatives. Accessing the wrong active alternative aborts.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("message"))
-    );
-
-    std::println("{}", value.unwrap<std::string>());
-
-    // value.unwrap<int>(); // Would abort: int is not active.
-}
-```
-### 8.3 `unwrap_none()`
-
-`unwrap_none()` checks that no alternative is active and returns the `None` tag. It aborts if the `Option` holds any value, including a secondary alternative.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-int main() {
-    rl::Option<int> absent(rl::None);
-    const auto empty_tag = absent.unwrap_none();
-
-    (void)empty_tag;
-    std::println("the Option is confirmed empty: {}", absent.is_none());
-}
-```
-### 8.4 `unwrap_unchecked()`
-
-`unwrap_unchecked()` reads the primary storage without checking that the primary alternative is active.
-
-It always returns `T` by value:
-
-- `const&` and `&` overloads require `T` to be copy-constructible;
-- `&&` requires `T` to be move-constructible.
-
-Calling it when the primary alternative is not active is undefined behavior. It does not reset the source.
-
-This operation is not a faster checked accessor. It is an unchecked storage access and should be avoided in ordinary application code. The following example uses it only after checking the primary alternative:
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-int main() {
-    rl::Option<int, double> value(rl::Some(17));
-
-    if (value.is_some<int>()) {
-        const int copy = value.unwrap_unchecked();
-        std::println("checked primary value: {}", copy);
-    }
-}
-```
-The check and the unchecked read must remain correctly related: do not mutate the `Option` between them, and do not use this function when another thread can mutate the same object without synchronization.
-
-Mechanically, the `const&`/`&` overloads of `unwrap_unchecked()` are nothing more than `*static_cast<const T*>(address of the primary storage slot)` (or the non-`const` equivalent) — there is no branch on the discriminator at all, not even in a debug build. The `&&` overload is the same read wrapped in `std::move`. If the primary alternative is not actually active, this reads whatever object (or partially-formed/uninitialized bytes) currently occupies that union slot as if it were a `T`, which is undefined behavior in the strict sense — not merely "wrong value," but a violation the compiler is entitled to use for optimization in ways that make the resulting behavior unpredictable beyond just returning a nonsense `T`.
-
-### 8.5 Fallback operations
-
-| Member | Behavior |
-|---|---|
-| `unwrap_or(fallback)` | Returns the primary value, or converts the supplied fallback to `T` |
-| `unwrap_or_default()` | Returns the primary value, or constructs `T{}` |
-| `unwrap_or_else(supplier)` | Returns the primary value, or calls a supplier and converts its result to `T` |
-
-All three inspect only the primary type. `None` and a secondary alternative both select the fallback path.
-
-`unwrap_or` evaluates its argument before the call. `unwrap_or_else` invokes its supplier only when required. The supplier can be nullary or accept one `None` argument. `rl::Default` itself can be used as a supplier for a default-constructible primary type.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<std::string> present(
-        rl::Some(std::string("cached"))
-    );
-    rl::Option<std::string> missing(rl::None);
-
-    std::println("present: {}", present.unwrap_or("fallback"));
-    std::println("missing: {}", missing.unwrap_or_default());
-
-    const auto generated = missing.unwrap_or_else([] {
-        std::println("supplier invoked");
-        return std::string("computed");
-    });
-
-    std::println("generated: {}", generated);
-}
-```
----
-
-## 9. Functional operations
-
-The methods in this section operate on the primary type unless explicitly stated otherwise. Each has `const&`, `&`, and `&&` overloads, with the callback receiving the corresponding primary-value category where applicable.
-
-### 9.1 `map(operation)`
-
-Transforms the primary value and returns `Option<U>`, where `U` is the non-`void` result type of the operation.
-
-If the primary type is not active, it returns `Option<U>(None)`. A secondary alternative is not propagated.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int> count(rl::Some(21));
-    rl::Option<int> missing(rl::None);
-
-    auto text = count.map([](int value) {
-        return std::to_string(value);
-    });
-
-    auto absent_text = missing.map([](int value) {
-        return std::to_string(value);
-    });
-
-    std::println("{}", text.unwrap());
-    std::println("is absent: {}", absent_text.is_none());
-}
-```
-The operation must not return `void`.
-
-### 9.2 `and_then(operation)`
-
-`and_then` invokes an operation on the primary value. The operation must itself return an `rl::Option` specialization. The returned `Option` type is the operation's return type.
-
-When the primary alternative is not active, `and_then` returns `None` converted to that return type.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-rl::Option<int> reciprocal(int value) {
-    if (value == 0) {
-        return rl::None;
-    }
-
-    return rl::Some(1 / value);
-}
-
-int main() {
-    rl::Option<int> input(rl::Some(2));
-
-    auto result = input.and_then(reciprocal);
-
-    std::println("reciprocal: {}", result.unwrap_or(-1));
-}
-```
-### 9.3 `or_else(operation)`
-
-`or_else` runs its callback only when the receiver is `None`. Any engaged alternative, including a secondary alternative, is preserved.
-
-The callback must return a value convertible to the same `Option<T, Ts...>` specialization. It may be nullary or accept one `None` argument.
-
-The `const&` and `&` overloads copy the engaged receiver and therefore require all alternatives to be copy-constructible. The `&&` overload moves the receiver and requires every alternative to be move-constructible.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int, std::string> error(
-        rl::Some(std::string("already engaged"))
-    );
-
-    rl::Option<int, std::string> missing(rl::None);
-
-    auto preserved = error.or_else([] {
-        return rl::Option<int, std::string>(rl::Some(0));
-    });
-
-    auto supplied = missing.or_else([] {
-        return rl::Option<int, std::string>(rl::Some(0));
-    });
-
-    std::println("preserved string: {}", preserved.unwrap<std::string>());
-    std::println("fallback primary: {}", supplied.unwrap());
-}
-```
-### 9.4 `map_or(operation, fallback)`
-
-Applies an operation to the primary value or returns the fallback. The fallback is an ordinary value and is evaluated before the call.
-
-The result type is the decayed type of the fallback. Both the operation's result and the fallback must be usable to construct that type.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-
-int main() {
-    rl::Option<int> present(rl::Some(21));
-    rl::Option<int> absent(rl::None);
-
-    const auto double_value = [](int value) {
-        return value * 2;
-    };
-
-    const int first = present.map_or(double_value, -1);
-    const int second = absent.map_or(double_value, -1);
-
-    std::println("{} / {}", first, second);
-}
-```
-### 9.5 `map_or_else(operation, supplier)`
-
-Applies an operation to the primary value or invokes a nullary fallback supplier. Both branches must have the same result type after removing cv- and reference-qualifiers.
-
-A secondary alternative also selects the fallback supplier.
-
-```cpp
-#include "rl_option.hpp"
-
-#include <print>
-#include <string>
-
-int main() {
-    rl::Option<int> present(rl::Some(42));
-    rl::Option<int> absent(rl::None);
-
-    const auto to_text = [](int value) {
-        return std::to_string(value);
-    };
-
-    const auto no_value = [] {
-        return std::string("not available");
-    };
-
-    const auto first = present.map_or_else(to_text, no_value);
-    const auto second = absent.map_or_else(to_text, no_value);
-
-    std::println("{} / {}", first, second);
-}
-```
-### 9.6 `map_or_transform(operation, fallback)`
-
-This method combines a primary transformation with a value fallback and has an additional `None` callback path.
-
-Its behavior is:
-
-1. If the state is `None` and `operation` accepts a `None` argument, invoke `operation(None)`.
-2. If the state is `None` and `operation` does not accept `None`, return the fallback.
-3. If the primary alternative is active and `operation` accepts the primary value, invoke it.
-4. If a secondary alternative is active, return the fallback.
-5. If the primary alternative is active but the operation is not invocable with it, return the fallback.
-
-The result type is the decayed type of the fallback, and the invoked operation result must be constructible as that type.
+For type-directed matching without a capture lambda, use a small variadic predicate class whose template arguments name the desired type or types. It is generic so the compiler can check it for each alternative, but it returns true only for one of the listed types:
 
 ```cpp
 #include "rl_option.hpp"
@@ -1456,47 +771,207 @@ The result type is the decayed type of the fallback, and the invoked operation r
 #include <string>
 #include <type_traits>
 
-int main() {
-    rl::Option<int, std::string> value(rl::None);
+template<class... Wanted>
+struct IsOneOf {
+    template<class U>
+    constexpr bool operator()(U&&) const noexcept {
+        return (std::same_as<std::remove_cvref_t<U>, Wanted> || ...);
+    }
+};
 
-    const auto describe = [](auto&& item) -> std::string {
-        using Item = std::remove_cvref_t<decltype(item)>;
+auto main() -> int {
+    rl::Option<int, std::string> value = rl::Some<std::string>("text");
 
-        if constexpr (std::same_as<Item, decltype(rl::None)>) {
-            return "empty";
-        } else if constexpr (std::same_as<Item, int>) {
-            return std::to_string(item);
-        } else {
-            return "secondary alternative";
-        }
-    };
-
-    const auto empty_text = value.map_or_transform(
-        describe,
-        std::string("not the primary alternative")
+    value.match(
+        rl::None >>= [] { std::println("empty"); },
+        IsOneOf<std::string>{} >>=
+            [](std::string const& text) { std::println("{}", text); },
+        rl::SomeAny >>= [](auto const&) { std::println("other alternative"); }
     );
-
-    value = std::string("secondary");
-
-    const auto secondary_text = value.map_or_transform(
-        describe,
-        std::string("not the primary alternative")
-    );
-
-    std::println("{} / {}", empty_text, secondary_text);
 }
 ```
-### 9.7 Primary-only combinators on a multi-type `Option`
 
-The distinction between primary and secondary alternatives is especially important for `Option<T, E>`.
+The same idea can be packaged into a handler adapter. The source demo in `src/Option.cpp` defines `TypedHandler<T, F>` and `on_type<T>(f)`: the adapter invokes its stored callable only when the dispatched type is exactly `T`, and marks the impossible other-type path unreachable. This is useful when building a reusable visitor class rather than spelling a generic lambda at every call site. Keep an unconditional fallback arm if a guard can fail for an otherwise covered type.
 
-- `map` on an active `E` returns `None` as `Option<U>`. The error value is not preserved.
-- `and_then` on an active `E` returns `None` as the callback's `Option` return type. The error value is not preserved.
-- `map_or`, `map_or_else`, and `unwrap_or*` use their fallback path for `E`.
-- `or_else` treats `E` as engaged and preserves it without calling the fallback.
-- `match()` can inspect and handle `T` and `E` separately.
+### 6.6 Matching a plain expression
 
-This is why `Option<T, E>` must not be described as having `std::expected` error-propagation semantics.
+The public header exposes `Option::match(...)`; it does not expose a free `rl::Match(expr, arms...)` function. The source demo has a local helper named `match_value` that wraps a value in a temporary single-alternative `Option` and forwards to `.match()`. The same adapter shape is:
+
+```cpp
+#include "rl_option.hpp"
+
+#include <type_traits>
+#include <utility>
+
+template<class T, class... Arms>
+auto match_value(T&& expression, Arms&&... arms) -> decltype(auto) {
+    using Value = std::remove_cvref_t<T>;
+    rl::Option<Value> subject = rl::Some<Value>(std::forward<T>(expression));
+    return subject.match(std::forward<Arms>(arms)...);
+}
+```
+
+This adapter owns a temporary copy or moved value for the duration of the call. Since the temporary is always engaged, its required `None` arm is unreachable at runtime but is still required by `Option::match()`'s compile-time exhaustiveness contract. This helper is an application-level pattern, not part of the public library API.
+
+### 6.7 Match result types
+
+When every handler returns `void`, `match()` returns `void`. When handlers return values, the library materializes those values and wraps them in an `Option` result. Distinct branch result types are retained as alternatives after duplicate types are removed; compatible types may be consolidated by the implementation's result-type rules. A reference returned by a handler does not escape as a reference to the arm's temporary result: results are materialized by value.
+
+Use `match<void>(...)` when branch return values should be discarded. Explicit result template arguments can select the result alternative type or types when the inferred result shape is not the desired one. Returning an `Option` from a handler follows the library's Option-aware result handling rather than requiring callers to manually wrap every scalar branch.
+
+The positive and negative cases are documented in `tests/match_return_types_positive.cpp`, `tests/match_return_types_negative.cpp`, and `tests/match_materialized_results.cpp`; see §21 for the test map.
+
+---
+
+## 7. State queries
+
+State queries inspect the discriminator and are constant-time with respect to the number of alternatives.
+
+| Member | Meaning |
+|---|---|
+| `explicit operator bool()`, `is_some()`, `has_any_engaged_value()` | True when any alternative is active |
+| `is_none()` | True only for the empty state |
+| `is_some<Q>()` | True only when alternative `Q` is active |
+| `is_default()` | Tests the selected default-constructible alternative against its default value; false for `None` |
+
+`is_default()` uses the primary alternative when it is default-constructible; otherwise it uses the first default-constructible secondary alternative. It requires equality comparison for the selected type. It does not mean that the `Option` is empty.
+
+### 7.1 `is_some_and(predicate)`
+
+Untargeted `is_some_and` calls its predicate for whichever alternative is active. The predicate must accept every declared alternative, or the call is rejected at compile time. It returns false for `None`.
+
+A targeted overload, `is_some_and<Q>(predicate)`, checks only alternative `Q`; it returns false for `None` and for every other alternative. This is useful when a predicate intentionally supports just one type.
+
+The callback receives the receiver's corresponding value category. On an rvalue receiver, an active value is consumed and the `Option` is reset after the predicate returns. If the predicate throws, that reset is not reached.
+
+### 7.2 `is_none_or(predicate)`
+
+Untargeted `is_none_or` returns true for `None`; for any active alternative it calls a predicate that must accept every alternative. The targeted form `is_none_or<Q>(predicate)` checks only `Q`, returning true for `None` and non-`Q` alternatives.
+
+As with `is_some_and`, an rvalue receiver is reset after an active predicate call completes, but not if the callback throws. These are value-category-sensitive operations; do not infer exception cleanup or reset behavior from the spelling alone.
+
+---
+
+## 8. Reading values and handling absence
+
+### 8.1 Checked primary access: `value()`, `unwrap()`, and `expect()`
+
+These accessors require the primary alternative `T` to be active. An empty state or a secondary alternative causes a diagnostic followed by `std::abort()`.
+
+| Member | Lvalue result | Rvalue result |
+|---|---|---|
+| `value()` | `T&` or `const T&` | `T&&` |
+| `unwrap()` | `T&` or `const T&` | `T` by value |
+| `expect(message)` | `T&` or `const T&` | `T` by value |
+
+`value() &&` returns a reference into the `Option` and does not reset it. The rvalue `unwrap()` and `expect()` overloads extract by value and reset after successful extraction. A throwing move may leave the source engaged; see §16.3.
+
+### 8.2 Typed access: `unwrap<Q>()`
+
+`unwrap<Q>()` selects a declared alternative by type, including secondary alternatives. Lvalue overloads return references; the rvalue overload returns `Q` by value and resets after successful extraction. If `Q` is not active, the checked access aborts.
+
+This explicit type selection gives the same rule for primitive, class, and enum alternatives: the library never guesses which active type the caller meant.
+
+### 8.3 `unwrap_none()`
+
+`unwrap_none()` verifies that the state is empty and returns the `None` tag. It aborts if any alternative is active.
+
+### 8.4 `unwrap_unchecked()`
+
+`unwrap_unchecked()` reads primary storage without checking the discriminator. Calling it unless the primary alternative is active is undefined behavior. It does not reset the source and is not a checked accessor with a debug-only branch removed. Avoid it in ordinary application code.
+
+### 8.5 Fallback operations
+
+| Member | Behavior |
+|---|---|
+| `unwrap_or(fallback)` | Converts any active alternative to primary type `T`; converts the fallback to `T` only for `None` |
+| `unwrap_or_else(supplier)` | Converts any active alternative to `T`; calls the supplier and converts its result to `T` only for `None` |
+| `unwrap_or_default()` | Returns the active alternative converted to `T`, or constructs `T{}` for `None` |
+
+These operations can handle a secondary only if it is convertible to the primary type. For unrelated alternatives, use `match()` or a targeted combinator so the conversion policy is explicit. `unwrap_or_default()` requires the primary `T` to be default-constructible; it does not search for a default-constructible secondary.
+
+`unwrap_or` evaluates its fallback argument before the call. `unwrap_or_else` invokes its supplier only on `None`; the supplier may be nullary or accept one `None` argument. On rvalue receivers, these operations may move from the active value but do not reset the source. A moved-from object can therefore remain engaged.
+
+---
+
+## 9. Functional operations
+
+The combinators come in untargeted forms, which must be valid for every declared alternative, and targeted forms, which name one alternative to inspect. The difference is enforced with constraints at compile time.
+
+### 9.1 `map(operation)`
+
+For `Option<T>`, `map(f)` invokes `f` on the active value and returns `Option<Res>`; on `None` it returns `None`.
+
+For `Option<T, Ts...>`, the untargeted overload requires `f` to accept every alternative. It returns an `Option` whose alternatives are the distinct result types produced for the input alternatives, in source alternative order. The result is not a bare payload. If the callback returns different types for different alternatives, all those result alternatives remain representable.
+
+```cpp
+#include "rl_option.hpp"
+
+#include <concepts>
+#include <string>
+
+auto main() -> int {
+    rl::Option<int, float> number = rl::Some<int>(4);
+
+    auto all_alternatives = number.map([](auto value) {
+        if constexpr (std::same_as<decltype(value), int>) {
+            return value + 1;
+        } else {
+            return value + 0.5f;
+        }
+    }); // Option<int, float>
+
+    auto only_integer = number.map<int>([](int value) {
+        return std::to_string(value);
+    }); // Option<std::string>; None if int is not active
+}
+```
+
+The targeted overload `map<Q>(f)` checks and invokes only `Q`; it does not probe callback support for other alternatives. If `Q` is inactive or the source is `None`, it returns `Option<Res>(None)`. A callback result that is itself an `Option` is a payload to `map`; use `and_then` to chain and flatten an Option-returning operation. The callback must produce a non-void result type.
+
+### 9.2 `and_then(operation)`
+
+`and_then` is for callbacks that return an `Option`. Untargeted `and_then(f)` requires every source alternative to be accepted and every callback result to be an `Option`. It merges and deduplicates the callback Option alternatives into the result `Option`. `None` produces `None`.
+
+The targeted form `and_then<Q>(f)` checks only `Q` and returns the callback's Option specialization directly. If `Q` is inactive or the source is `None`, it returns `None` converted to that result type.
+
+Use `map` when the callback returns a payload. Use `and_then` when it returns an Option and you want the callback's Option layer to be the result container.
+
+### 9.3 `or_else(operation)`
+
+`or_else` invokes its callback only for `None`. Any active alternative, primary or secondary, is preserved. The callback must return the same `Option<T, Ts...>` specialization.
+
+The lvalue forms copy an active receiver; the rvalue form moves it. On the rvalue engaged path, the implementation resets the source after constructing the returned Option. On the `None` path, the callback supplies the result. This operation remains Option-shaped.
+
+### 9.4 `map_or(operation, fallback)`
+
+Untargeted `map_or(f, fallback)` applies `f` to whichever alternative is active, or returns the fallback for `None`. The callback must accept every alternative. The result is a bare value type selected from the fallback/result constraints, not an `Option`.
+
+The targeted `map_or<Q>(f, fallback)` applies `f` only when `Q` is active; all other alternatives and `None` use the fallback. The fallback argument is evaluated before the call.
+
+### 9.5 `map_or_else(operation, supplier)`
+
+Untargeted `map_or_else(f, supplier)` applies `f` to any active alternative and calls the supplier only for `None`. The callback must accept every alternative and the two branches must satisfy the result type constraints. The result is a bare value.
+
+The targeted `map_or_else<Q>(f, supplier)` applies `f` only to `Q`; `None` and other alternatives use the supplier.
+
+### 9.6 `map_or_transform(operation, fallback)`
+
+This operation transforms active alternatives to a bare result and provides a special optional callback path for `None`. In the untargeted form, the callback must be valid for every alternative. On `None`, it is called with `None` when that call is supported; otherwise the fallback is returned. The targeted overload transforms only its named alternative, uses the optional `None` callback when present, and uses the fallback for other alternatives.
+
+### 9.7 Predicate combinators
+
+Untargeted `is_some_and(predicate)` and `is_none_or(predicate)` require the predicate to accept every alternative. Their targeted forms add a type argument and inspect only that type. They return `bool`, not an `Option`.
+
+### 9.8 The three golden rules for alternative types
+
+1. **Single-type direct mapping.** For `Option<T>`, including CTAD such as `rl::Option a = rl::Some<double>(4.99);`, the active type is known at compile time. Untargeted `a.map(f)` and `a.and_then(f)` deduce from `T` and return an `Option` result.
+
+2. **Targeted mapping preserves a predictable container.** For a multi-alternative Option, targeted overloads such as `map<Q>`, `and_then<Q>`, `map_or<Q>`, `map_or_else<Q>`, `map_or_transform<Q>`, `is_some_and<Q>`, and `is_none_or<Q>` inspect only `Q`. Other alternatives are not used to test whether the callback is valid. `map`, `and_then`, and `or_else` remain Option-shaped operations. When a targeted `map<Q>` succeeds, its result is a single-primary `Option<Res>`; when the target is inactive, the result is `None`. Targeted `and_then<Q>` returns the callback's Option type.
+
+3. **Untargeted operations reject partial callback support.** Untargeted `map`, `and_then`, `map_or`, `map_or_else`, `map_or_transform`, `is_some_and`, and `is_none_or` are rejected at compile time unless the callback satisfies the constraints for every declared alternative. The concepts `__all_mappable_alternatives_`, `__all_and_then_alternatives_`, `__all_map_or_valid_`, and `__all_predicate_invocable_` enforce these rules. No alternative is silently dropped. Choose a targeted operation or exhaustive `match()`.
+
+These rules keep primitive, class, and enum alternatives uniform. Callers explicitly choose when a value leaves the Option container with `unwrap<Q>()`, while mapping keeps a stable container shape and matching provides exhaustive typed dispatch. That predictability is valuable in generic code and prevents type-category-dependent unwrapping assumptions.
 
 ---
 
@@ -1518,7 +993,7 @@ the possible states are:
 
 The type does not encode an invariant that exactly one of `int` or `ParseError` must be active. `None` is also valid.
 
-A result-style producer should return `Some(value)` for success and `Some(error)` for a secondary error alternative:
+A result-style producer should return `Some<T>(value)` for success and `Some<E>(error)` for a secondary error alternative:
 
 ```cpp
 #include "rl_option.hpp"
@@ -1531,19 +1006,19 @@ enum class LookupError {
     unavailable
 };
 
-rl::Option<int, LookupError> lookup(std::string_view key) {
+auto lookup(std::string_view key) -> rl::Option<int, LookupError> {
     if (key == "answer") {
-        return rl::Some(42);
+        return rl::Some<int>(42);
     }
 
     if (key.empty()) {
-        return rl::Some(LookupError::not_found);
+        return rl::Some<LookupError>(LookupError::not_found);
     }
 
-    return rl::Some(LookupError::unavailable);
+    return rl::Some<LookupError>(LookupError::unavailable);
 }
 
-int main() {
+auto main() -> int {
     const auto result = lookup("answer");
 
     result.match(
@@ -1565,7 +1040,7 @@ int main() {
 ```
 ### 10.2 Prefer `match()` when preserving the alternative matters
 
-Do not transform a result-shaped `Option<T, E>` with a primary-only combinator when the secondary value must survive.
+Do not use a targeted primary transformation when the secondary value must survive unchanged. Untargeted `map` can accept and transform every alternative, but it does not preserve the original error value automatically. Use `match()` when you need to handle the primary and secondary states separately and carry the original error forward.
 
 Use `match()` to make the handling explicit:
 
@@ -1578,15 +1053,15 @@ enum class ArithmeticError {
     division_by_zero
 };
 
-rl::Option<int, ArithmeticError> divide(int numerator, int denominator) {
+auto divide(int numerator, int denominator) -> rl::Option<int, ArithmeticError> {
     if (denominator == 0) {
-        return rl::Some(ArithmeticError::division_by_zero);
+        return rl::Some<ArithmeticError>(ArithmeticError::division_by_zero);
     }
 
-    return rl::Some(numerator / denominator);
+    return rl::Some<int>(numerator / denominator);
 }
 
-int main() {
+auto main() -> int {
     const auto result = divide(10, 0);
 
     result.match(
@@ -1632,17 +1107,15 @@ The current implementation resets the old state before constructing the new prim
 #include <string>
 #include <utility>
 
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("old alternative"))
-    );
+auto main() -> int {
+    rl::Option<int, std::string> value = rl::Some<std::string>("old alternative");
 
     int& primary = value.emplace(12);
     primary += 1;
 
     std::println("primary: {}", value.unwrap());
 
-    rl::Option<std::string> temporary(rl::None);
+    rl::Option<std::string> temporary = rl::None;
     std::string extracted = std::move(temporary).emplace("temporary value");
 
     std::println("extracted: {}", extracted);
@@ -1660,8 +1133,8 @@ Calling it when already empty is valid.
 
 #include <print>
 
-int main() {
-    rl::Option<int> value(rl::Some(5));
+auto main() -> int {
+    rl::Option<int> value = rl::Some<int>(5);
 
     value.reset();
     std::println("empty after reset: {}", value.is_none());
@@ -1681,10 +1154,8 @@ It is available on lvalues and requires every alternative to be move-constructib
 #include <print>
 #include <string>
 
-int main() {
-    rl::Option<int, std::string> source(
-        rl::Some(std::string("payload"))
-    );
+auto main() -> int {
+    rl::Option<int, std::string> source = rl::Some<std::string>("payload");
 
     auto extracted = source.take();
 
@@ -1704,10 +1175,8 @@ The target alternative is selected using the same exact-type-then-unique-constru
 #include <print>
 #include <string>
 
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("before"))
-    );
+auto main() -> int {
+    rl::Option<int, std::string> value = rl::Some<std::string>("before");
 
     auto previous = value.replace(99);
 
@@ -1727,11 +1196,9 @@ They require every alternative to be move-constructible and swappable. The condi
 #include <print>
 #include <string>
 
-int main() {
-    rl::Option<int, std::string> first(rl::Some(7));
-    rl::Option<int, std::string> second(
-        rl::Some(std::string("text"))
-    );
+auto main() -> int {
+    rl::Option<int, std::string> first = rl::Some<int>(7);
+    rl::Option<int, std::string> second = rl::Some<std::string>("text");
 
     swap(first, second);
 
@@ -1769,10 +1236,8 @@ The pointer refers into the original `Option`; it does not extend the lifetime o
 #include <string>
 #include <utility>
 
-int main() {
-    rl::Option<int, std::string> value(
-        rl::Some(std::string("hello"))
-    );
+auto main() -> int {
+    rl::Option<int, std::string> value = rl::Some<std::string>("hello");
 
     auto mutable_pointer = value.as_mut_ptr<std::string>();
 
@@ -1813,7 +1278,7 @@ The `operator==` overload requires every alternative to be equality-comparable.
 
 An `Option` can be compared with `Some<Q>` when `Q` is one of its alternatives and `Q` is equality-comparable. The comparison succeeds only when that exact alternative is active and its value equals the wrapped value.
 
-There is no direct equality overload between an `Option` and an arbitrary bare payload. Use `Some(value)`.
+There is no direct equality overload between an `Option` and an arbitrary bare payload. Use `Some<T>(value)`.
 
 ### 13.4 Equality with `Default`
 
@@ -1839,10 +1304,10 @@ A `None` state uses an internal sentinel hash value. Engaged multi-alternative s
 #include <functional>
 #include <print>
 
-int main() {
-    rl::Option<int> empty(rl::None);
-    rl::Option<int> zero(rl::Some(0));
-    rl::Option<int> another_zero(rl::Some(0));
+auto main() -> int {
+    rl::Option<int> empty = rl::None;
+    rl::Option<int> zero = rl::Some<int>(0);
+    rl::Option<int> another_zero = rl::Some<int>(0);
 
     const bool same = zero == another_zero;
     const bool is_empty = empty == rl::None;
@@ -1871,7 +1336,7 @@ The following are checked operations:
 - `unwrap_none()` when any alternative is active;
 - `match()` when no runtime arm matches the active state.
 
-These failure paths print a diagnostic to `stderr` and call `std::abort()`. They do not throw a library-defined exception and do not perform normal stack unwinding.
+These failure paths print a diagnostic to `stderr` and call `std::abort()`. They do not throw a library-defined exception and do not perform normal stack unwinding. The internal failure helper also makes invalid constant evaluation fail: when reached during constant evaluation with exceptions enabled it throws a string; in a runtime build the checked-failure path aborts.
 
 `unwrap_unchecked()` is different: it performs no validation, and incorrect use is undefined behavior rather than a checked abort.
 
@@ -1891,7 +1356,7 @@ The header requires every alternative to be nothrow-destructible. That requireme
 
 ### 14.3 Exceptions-disabled builds
 
-The header conditionally compiles exception-specific cleanup using `__cpp_exceptions`. A c++26 build with exceptions disabled is possible when the compiler and standard library support the required facilities and the user's alternative types and callbacks are suitable for that mode.
+The header conditionally compiles exception-specific cleanup using `__cpp_exceptions`. A C++26 build with exceptions disabled is possible when the compiler and standard library support the required facilities and the user's alternative types and callbacks are suitable for that mode.
 
 Disabling exceptions does not make a potentially throwing user operation safe; it changes what the compiler accepts and how the program can report failures.
 
@@ -1909,90 +1374,66 @@ Avoid `unwrap_unchecked()` unless the primary alternative has been independently
 
 ## 15. Constraints and edge cases
 
-The constraints below are enforced by the supplied header or follow directly from its public operation contracts.
-
 ### 15.1 Alternative-type requirements
 
-Every alternative must be:
-
-- an object type;
-- not an array type;
-- not `volatile`-qualified;
-- nothrow-destructible.
-
-Reference types are not object types and are not supported. Use a pointer or `std::reference_wrapper<T>` when a non-owning reference-like alternative is required.
-
-All alternatives must be distinct after removing cv-qualification. A specialization such as `Option<int, const int>` is rejected as a duplicate-alternative list.
+Every alternative must be a non-array object type with a non-throwing destructor. Reference and volatile alternatives are rejected. Types must be unique after removing cv qualification. Use a pointer or `std::reference_wrapper<T>` when an alternative should refer to an object owned elsewhere; doing so does not extend that object's lifetime.
 
 ### 15.2 No implicit default-empty state
 
-`Option()` is deleted for every specialization. Initialize all objects explicitly with `Some`, `None`, or `Default`.
+`Option()` is deleted. Use `None` for empty, `Some<T>` for an engaged value, and `Default` when a default-constructed engaged alternative is intended. Bare payload construction is not available.
 
-### 15.3 Bare-value construction and bare-value assignment differ
+### 15.3 Explicit engaged construction
 
-A bare payload is not a constructor argument. It is accepted by the assignment operator only after an `Option` object exists.
-
-Use:
-
-```cpp
-#include "rl_option.hpp"
-
-int main() {
-    rl::Option<int> value(rl::None);
-    value = rl::Some(42);
-}
-```
-Do not use `rl::Option<int> value(42);` or `rl::Option<int> value = 42;`.
+Construction requires `Some<T>`; a bare payload cannot implicitly select an alternative. The current header separately provides bare-value assignment when a target alternative is uniquely selectable, but `Some<T>` remains the clearest choice when the alternative matters.
 
 ### 15.4 No cross-specialization converting constructor
 
-`Option<T, Ts...>` has no general converting constructor from a differently-shaped `Option<U, Us...>`. Convert explicitly, for example by mapping a primary value into a new type or by matching each alternative and constructing the target specialization.
+There is no general converting constructor from a differently-shaped `Option<U, Us...>`. Convert explicitly by matching alternatives or mapping a value into the target specialization.
 
 ### 15.5 `Default` and `unwrap_or_default()` use different rules
 
-`Default` can select the first default-constructible secondary alternative when the primary type is not default-constructible.
+`Default` constructs the primary if possible, or the first default-constructible secondary otherwise. `unwrap_or_default()` returns primary type `T` and requires `T` to be default-constructible. It does not search the alternative pack.
 
-`unwrap_or_default()` always returns the primary type `T` and therefore requires `T` itself to be default-constructible. It does not search secondary alternatives.
+### 15.6 Primary access and alternative-aware operations
 
-### 15.6 Secondary alternatives are not primary values
+`value()`, `unwrap()`, `expect()`, dereference, and arrow access the primary `T`. Typed accessors select a named alternative. Untargeted combinators consider all alternatives and are constrained to reject callbacks that cannot handle the full pack. Targeted overloads inspect one named alternative. Fallback-by-value functions convert an active alternative to `T`, so they require that conversion to be valid.
 
-An active secondary makes `is_some()` true, but it does not make `value()`, `unwrap()`, `map()`, or `and_then()` operate on that secondary.
+### 15.7 Static exhaustiveness and runtime guards
 
-Use `unwrap<Q>()`, `is_some<Q>()`, the typed pointer views, or `match()`.
+Compile-time checking proves that patterns can cover `None` and every declared alternative. It cannot prove a guard returns true for a particular value. A guarded match can still abort at runtime if every applicable guard fails. Use an unconditional fallback where required.
 
-### 15.7 Runtime guards can fail after static coverage succeeds
+### 15.8 Value patterns
 
-Compile-time coverage checks the types a pattern can accept. It cannot prove that a predicate returns true for every runtime object. End a guarded match with a suitable catch-all or otherwise prove that the guarded cases cover all possible values.
+`Some<T>(value)` and ordinary comparison patterns do not impose a handler-alignment rule in the current implementation. The old alignment claim is not part of the current source behavior.
 
-### 15.8 `match()` value-pattern alignment
+### 15.9 Rvalue operations and source state
 
-A value pattern's type alignment must not exceed the handler type alignment. This implementation detail can reject common `Some<int>(...)` or raw integer patterns paired with ordinary lambdas. `Where` guards avoid this issue for the usual stateless or ordinarily aligned lambdas. See [§6.5](#65-value-patterns-somevalue-and-ordinary-comparison-patterns).
+An rvalue-qualified call may move from a payload, reset the `Option`, or leave it engaged with a moved-from payload. These behaviors are member-specific:
 
-### 15.9 Rvalue operations may consume the primary value
+- Moving the `Option` itself does not reset its source.
+- `std::move(opt).value()` returns `T&&` and does not reset.
+- `unwrap()`, `expect()`, and `unwrap<Q>()` on an rvalue return by value and reset after successful extraction.
+- `take()` returns the previous Option and resets after the move succeeds.
+- Rvalue `map`, `and_then`, `map_or*`, predicates, and `or_else` may consume the active value and reset after the invoked callback or predicate completes. A callback exception can interrupt that path before reset. A targeted overload does not consume a non-target alternative.
+- Rvalue `unwrap_or*` may move from an active alternative while converting it to `T`, but it does not reset the source.
+- `match()` does not reset the receiver by default.
+- Rvalue `emplace()` constructs the primary alternative and extracts it by value.
 
-The `&&` overloads of `map`, `and_then`, `is_some_and`, `is_none_or`, and the primary extraction/fallback functions can move from the primary value. Some successful rvalue paths reset the source; others return an rvalue reference or move the `Option` without resetting it.
+Check the exact overload when source state matters. Do not equate `std::move(opt).member()` with `opt.reset()`.
 
-Do not infer that every `std::move(option).function()` call leaves `option` empty. In particular:
+### 15.10 Object lifetime and borrowed views
 
-- `std::move(option).value()` returns `T&&` and does not reset the source;
-- `std::move(option).unwrap()` extracts by value and resets on success;
-- `std::move(option).unwrap_unchecked()` returns by value without resetting;
-- `std::move(option).or_else(...)` moves the engaged receiver into its return value; it does not explicitly reset the moved-from source;
-- `std::move(option).is_some_and(predicate)` and `std::move(option).is_none_or(predicate)` consume an active primary value and reset the source after the predicate call, whether it returns `true` or `false`. Neither operation consumes a secondary alternative;
-- the rvalue `map`, `and_then`, `map_or`, and `map_or_else` overloads consume an active primary value. Their non-primary paths do not consume a secondary alternative;
-- `take()` is the explicit lvalue operation that returns the old `Option` and resets the source.
+References returned by lvalue accessors and pointers returned by `as_mut_ptr()` / `as_immut_ptr()` refer into the `Option`'s active storage. They do not own the payload or keep it alive. Reset, replacement, emplace, assignment, swap, or destruction can end that payload's lifetime and invalidate outstanding references and pointers.
 
-### 15.10 Pointer-view lifetime
-
-The pointers returned by `as_mut_ptr` and `as_immut_ptr` point into the original `Option`. They do not own the object or extend its lifetime. The rvalue overloads are deleted for this reason.
+`RL_LIFETIME_BOUND` is a compiler diagnostic annotation, not a borrow checker. The type system does not prevent a caller from retaining a view past the owner's lifetime or across a mutation. Keep views local, and do not mutate the Option while using a view into its active object. The pointer-view rvalue overloads are deleted to prevent the most direct dangling-view mistake.
 
 ### 15.11 No built-in formatter
 
-The header does not provide `std::formatter` for `rl::Option`. Formatting an `Option` directly with `std::print` or `std::println` is not supported by this header. Extract or match the contained value and format that instead.
+This header does not provide `std::formatter` for `rl::Option`. Match or extract a payload and format that value.
 
 ### 15.12 No built-in synchronization
 
-`rl::Option` contains no mutex or atomic synchronization. Concurrent access that includes a write to the same instance requires external synchronization, just as it would for an ordinary object.
+An `Option` is not synchronized. Concurrent access that includes a write to the same object requires external synchronization.
 
 ---
 
@@ -2000,74 +1441,58 @@ The header does not provide `std::formatter` for `rl::Option`. Formatting an `Op
 
 ### 16.1 Storage model
 
-The implementation uses manually managed storage for the primary and secondary alternatives, plus an active-state discriminator. It maintains alignment requirements for the stored alternatives and the discriminator.
+The current implementation uses manually managed union storage plus one discriminator. This section describes the present header, not a stable ABI or serialization format.
 
-Concretely, for `Option<T, Args...>`:
+- **Discriminator values:** `0` means `None`, `1` means the primary type, and values `2` onward identify secondary alternatives in declaration order. A dedicated `destroying_index_` value is `sizeof...(Ts) + 2`; it marks destruction in progress so reentrant queries see an empty-like state and mutation during destruction can be diagnosed. The discriminator's integer type is selected by `option_index_type_<sizeof...(Ts) + 2>`: `unsigned char`, then `unsigned short`, then `std::size_t`, according to the range required.
+- **Primary and secondary storage:** the primary has a dedicated union member. Secondary alternatives are stored in a recursive `Alternative_<...>` union whose first member is the first secondary and whose other member is another nested `Alternative_`. This means the active secondary's declaration position determines how many union wrappers must be activated.
+- **Construction and destruction:** selecting a nested secondary placement-constructs the empty union wrappers along its path and then constructs the payload. Reset destroys the active payload and then ends the lifetimes of those wrapper unions in reverse. The primary path does not need recursive wrappers.
+- **Per-type operation tables:** compile-time arrays of function pointers dispatch copy/move construction, copy/move assignment, equality, three-way comparison, same-alternative swap, and hashing by active index. Primary destruction is direct; a separate destroy table handles secondary types.
+- **Layout:** payload storage is sized for the largest primary or secondary representation and aligned for the strictest alternative and discriminator requirement. The discriminator follows the payload storage, with padding as required. The single-type specialization currently uses the internal `Optional_<T>` storage block and has matching size and alignment. These details are implementation observations; callers must not depend on exact `sizeof`, member offsets, or raw bytes.
 
-- **The discriminator is a single integer, not a per-type flag.** Its type is chosen by a small trait (`option_index_type_<N>`, with `N = sizeof...(Args) + 1`): `unsigned char` if `N` fits, else `unsigned short`, else `std::size_t`. The value `0` means `None`. The value `1` means the primary type `T` is active. Each secondary alternative occupies `2, 3, 4, ...` in declaration order — the second template argument is index `2`, the third is `3`, and so on.
-- **The primary type gets dedicated storage; the secondaries share one union.** The top-level payload is itself a union of two things: a `Tp_` member for the primary type, and an `Alternative_<Args...>` member for the secondaries. `Alternative_<Args...>` is built recursively: `Alternative_<First, Rest...>` is a union of a `first_` member (type `First`) and a `rest_` member (type `Alternative_<Rest...>`). So for `Option<T, A, B, C>`, the secondary union is effectively "`A`, or (`B`, or `C`)" nested three unions deep, not a single flat union of `A`, `B`, and `C` side by side.
-- **Activating a deep secondary costs one step per level of nesting.** To construct the alternative at nesting depth `k` (0-indexed among the secondaries), the implementation placement-constructs `k` empty wrapper unions on the way down (`std::construct_at` on each intervening `Alternative_<...>`, which is itself a legitimate "live" union object with no initialized member yet) until it reaches the union that actually has the target type as a direct member, and only then constructs the real value there from the supplied arguments. Destruction reverses this: destroy the leaf value, then destroy each wrapper it passed through, in the opposite order, because each wrapper's own lifetime must end explicitly once its member's lifetime has ended. This is why the *n*-th secondary alternative is not "free" relative to the first one — it carries `n` extra union-activation and union-deactivation steps on every construction and destruction, which is exactly the kind of compounding cost that shows up when a project pushes many distinct secondary alternatives onto one `Option` (see [§17](#17-a-nine-alternative-walkthrough) and [§18.9](#189-dont-grow-the-alternative-list-for-just-in-case-extensibility)).
-- **Per-alternative operations are collected into dispatch tables, not `if`/`switch` chains.** Copy-construct, move-construct, copy-assign, move-assign, equality, three-way comparison, same-alternative `swap`, and hashing are each implemented once per alternative type and collected into a `static constexpr std::array` of function pointers, indexed by `active_index - 1` (the table has one entry for the primary plus one per secondary). The one exception is destruction: since the primary's destructor is called directly and inline wherever `reset()` happens, the destroy-dispatch table only needs entries for the secondaries, and is indexed by `active_index - 2`.
-- **Whole-object alignment and size follow directly from the above.** The object's alignment is the strictest alignment among `T`, every `Args`, and the discriminator type. Its payload size is the larger of `sizeof(T)` and `sizeof(Alternative_<Args...>)`, rounded up to that alignment; the discriminator sits immediately after the payload, and any trailing padding needed to make the whole object a multiple of its alignment comes last. When there are **zero** secondary alternatives, this collapses to exactly the same size and alignment as the header's internal single-type `Optional_<T>` building block — the `None`/multi-alternative machinery costs nothing extra for the common `Option<T>` case beyond what a bespoke hand-rolled optional would already need.
-
-None of the above is part of the stable public contract. It is accurate for the current revision of the header and is written down here because understanding *why* certain operations have the costs and guarantees they do (§16.3, §16.4, §17) requires knowing roughly how the object is laid out. Do not serialize the raw bytes of an `Option`, depend on its exact `sizeof`, or assume this layout survives a header upgrade, a different compiler, or a different standard library.
+The discriminator allows state queries to remain constant-time. The recursive union means construction and destruction of a deep secondary perform work proportional to its nesting depth. Adding alternatives also adds generated per-type operations and template instantiations.
 
 ### 16.2 Triviality and special members
 
-The internal storage layers conditionally preserve trivial destruction, copy construction, move construction, copy assignment, and move assignment when the relevant alternative types permit them.
+Internal storage layers conditionally preserve trivial destruction, copy construction, move construction, copy assignment, and move assignment where the payload types permit them. Public copy/move operations are constrained by the requirements of every alternative, even when one particular active value would be copyable.
 
-At the public `Option` level, copy/move operations are constrained by the capabilities of every declared alternative.
+### 16.3 Exception behavior during state changes
 
-### 16.3 Exception safety during state changes
+The implementation has selected safeguards, not a universal strong exception guarantee.
 
-Three places in the implementation go out of their way to order operations so that a throwing user type cannot leave an `Option` in a worse state than it started in, beyond the ordinary "this object's lifetime has ended" guarantee that applies to any C++ type:
-
-- **Bare-value assignment stages a temporary before touching the old value.** When `option = some_value;` resolves to a movable target alternative, the implementation first constructs a temporary of that target type from `some_value` — while whatever alternative was previously active, if any, is still fully alive — and only afterwards resets the old alternative and move-constructs the real storage from the temporary. This matters whenever the assigned expression can read from the `Option`'s *current* value (directly or through aliasing), and it means a throwing converting constructor leaves the original value completely untouched rather than having already destroyed it. (When the target type isn't movable, this staging isn't possible, and the implementation falls back to constructing directly in place — which is also why `replace()` and `operator=` for a non-movable alternative type behave slightly differently from the movable case.)
-- **Copy/move assignment reuses live storage instead of always rebuilding it.** If both sides of an assignment already have the *same* alternative active, the value is assigned onto the existing object in place (falling back to destroy-then-reconstruct only when that type isn't copy-/move-assignable). Only when the active alternatives differ, or either side is `None`, does assignment reset the destination and construct the new alternative from scratch. Both the copy and move assignment operators check for self-assignment (`this == std::addressof(other)`) up front and no-op in that case, before any of the above.
-- **"Extract by value and empty the source" is conditioned on actually succeeding.** `unwrap() &&`, `expect() &&`, the shared `take_unchecked()` helper they (and `emplace() &&`, `unwrap_or() &&`, `unwrap_or_default() &&`, `unwrap_or_else() &&`) are built on, and the consuming-lambda wrapper behind the rvalue `map`, `and_then`, `map_or`, `map_or_else`, `map_or_transform`, `is_some_and`, and `is_none_or` overloads, all share one small RAII guard. The guard records `std::uncaught_exceptions()` at construction and, in its destructor, resets the `Option` only if that count has **not** increased since — i.e., only if the enclosing expression ran to completion without a new exception propagating through it. If, for example, `Tp_`'s move constructor throws while `unwrap() &&` is building its by-value return, the guard's destructor still runs (during unwinding), observes the higher exception count, and deliberately skips the reset — the `Option` is left exactly as engaged as it was before the call. So "extraction empties the source" is really "extraction empties the source *if it didn't throw while doing so*"; a type whose move constructor can throw should be understood with that caveat.
+- **Bare-payload assignment stages conversions when possible.** For a movable selected target, it constructs a temporary from the incoming expression before destroying the currently active object. A throwing conversion therefore leaves the old value alive. The implementation then resets and moves the staged target into storage. Non-movable target types need a different direct-construction path.
+- **Same-alternative assignment can reuse the payload object.** When source and destination hold the same alternative and that type is assignable, the existing object is assigned in place. When the active alternatives differ, or same-type assignment is unavailable, the implementation may destroy and reconstruct the destination. A throwing operation in those paths can leave state different from the original.
+- **Successful extraction resets selectively.** Rvalue `unwrap()`, `expect()`, and `unwrap<Q>()` use a guard that resets only when extraction completes without a new exception. A throwing move leaves the Option engaged, though the payload itself may be moved-from depending on the move constructor.
+- **Combinators are not transactions.** Rvalue operations may move from an active value before calling user code. If the callback throws, source reset may not happen and the payload may be moved-from. Other operations reset at different points. Do not assume rollback or a strong exception guarantee.
+- **User code can throw.** Payload constructors, assignments, moves, comparisons, hash functions, and callbacks are not universally non-throwing. The type requires non-throwing destruction, but that does not make the full Option API non-throwing.
 
 ### 16.4 `match()` dispatch mechanics
 
-- `match()` is one function template written with an explicit object parameter — `template <typename... Rp_, typename Self_, typename... Arms_> constexpr auto match(this Self_&& self, Arms_&&... arms)` — rather than three separately ref-qualified overloads. `std::forward_like<Self_>` is used to recover the right value category (`const&`, `&`, or `&&`) for whichever alternative turns out to be active, so one function body serves all three call forms.
-- Finding *which* alternative is active is a compile-time-unrolled, runtime-tested linear scan, not a jump table: a local generic lambda recurses over a compile-time index from `0` up to `sizeof...(Args)`, and at each step compares the live discriminator against `Index + 1` at runtime, stopping at the first match (`std::unreachable()` terminates the recursion if somehow none match, which cannot happen for a well-formed discriminator value). One more alternative in the list is, in the worst case, one more runtime comparison before the active type is identified.
-- Once the active type is known, the implementation walks the arm pack in source order. For each arm, whether its pattern *could* possibly apply to the active type is decided entirely at compile time via `if constexpr (pattern_matches_type_<Pattern, CurrentType>())` — an arm that statically cannot apply to the active alternative costs nothing at that call site, not even a skipped runtime branch. Only arms that are statically compatible with the active type get a runtime check (`matches_value_`, which evaluates the guard predicate, the `Some(value)` equality check, or the plain equality comparison, as appropriate). The first such arm whose runtime check returns `true` is invoked, with the forwarded value and the correctly deduced return type.
-- If execution runs off the end of the arm list for the engaged path without any runtime match — which can only happen when every statically-applicable arm was a guard and every one of them returned `false` at runtime — the implementation prints `Option<{type}>::match() failed - no matching pattern arm` to `stderr` and calls `std::abort()`. `None` is dispatched completely separately and more simply: the first arm in source order whose pattern is `None` or `Wild` is invoked with no arguments; `None` never goes through `matches_value_`'s runtime guard evaluation at all.
-- `Arm_<Pattern, Handler>` is laid out as `[[no_unique_address]] pattern`, then computed mid-padding so the handler starts on its own alignment boundary, then `handler` as the last member — relying on the handler to supply the whole struct's trailing alignment. This is exactly why `static_assert(alignof(handler_type) >= alignof(pattern_type))` exists (see [§6.5](#65-value-patterns-somevalue-and-ordinary-comparison-patterns)): a stricter-aligned pattern would need padding bytes *after* the handler, and a `[[no_unique_address]]` member with nothing following it to overlap into cannot make that padding free, so the combination is refused outright rather than silently costing an extra byte.
-- The three `static_assert`s that gate `match()` at compile time (an arm covers `None`; an arm covers the primary type; every alternative, primary and secondary, has at least one potentially-applicable arm) all go through the same `pattern_matches_type_` compile-time predicate used for dispatch. They check whether an arm's *pattern type* is the kind of thing that could ever apply to a given alternative type — never whether a guard's *runtime return value* will actually be `true` for the object in front of it at any particular moment. That gap between "statically could apply" and "actually did apply this time" is precisely what `std::abort()` exists to catch, and precisely why [§15.7](#157-runtime-guards-can-fail-after-static-coverage-succeeds)'s advice to end a guarded match with a true catch-all is not optional once more than one guard is in play for the same alternative.
+- `match()` is implemented with an explicit object parameter and `std::forward_like` so the active payload is forwarded as const lvalue, mutable lvalue, or rvalue according to the receiver.
+- The active alternative is found by a compile-time-unrolled sequence of runtime discriminator comparisons. This is a linear scan, not a guaranteed jump table. With `N` alternatives, the worst case tests each alternative index.
+- For a known active type, arms are considered in source order. Patterns that cannot apply to that type are removed from the dispatch path at compile time; applicable guards and value patterns are checked at runtime until one matches.
+- `None` is handled on a separate path. If any explicit `None` arm is present, it is preferred; otherwise a `Wild` arm handles it. The selected `None` handler is called without an argument.
+- Compile-time constraints require `None` coverage and exhaustive coverage for the alternatives. For ordinary alternatives a compatible catch-all such as `SomeAny` or `Wild` can cover multiple types. For bool, both true and false cases or a catch-all are required. Guard type compatibility does not establish that the guard will return true at runtime.
+- If all runtime guards for the active engaged value fail, the implementation writes a diagnostic and aborts. Callback exceptions are not converted into this failure path; they propagate as ordinary C++ exceptions.
+- The result type is deduced from all arms. Non-void handler results are materialized by value and wrapped in an Option result, with result alternatives deduplicated or consolidated by the result rules. `match<void>` discards branch results. References returned by handlers do not turn the result into a borrowed view.
 
 ### 16.5 Diagnostics and type names
 
-Bad-access diagnostics include a type name. The implementation uses C++26 reflection when its feature-test macros are available; otherwise, it parses `__PRETTY_FUNCTION__`.
-
-Concretely, when reflection is unavailable, the type name is recovered from the compiler's own function signature for a small helper template (`get_type_name<Qp_>()`), by finding the substring between the outermost `[` and `]` that GCC/Clang embed in `__PRETTY_FUNCTION__`, locating the literal text `"Qp_ = "` inside it, and then scanning forward character by character — tracking nested `<...>`, `(...)`, and `[...]` depth — until a `,` or `;` appears at depth zero, or an unmatched `]` is found. That scan is necessary, not cosmetic: a naive "stop at the first comma" approach would cut off a type name like `std::pair<int, int>` or `std::array<int, 4>` partway through, because those names contain commas of their own at a nested depth. The same scan is reused unchanged whether the subview helper is `std::string_view::subview` (when available) or `substr`.
-
-This machinery exists purely to make `abort()` diagnostics readable — messages such as `Option<int>::unwrap() failed: Option does not wield any value.`, `Option<int>::unwrap<ReadError>() failed: active alternative does not match.`, or `Option<int>::match() failed - no matching pattern arm`. The exact spelling of a type name in these messages is compiler- and configuration-dependent (reflection vs. `__PRETTY_FUNCTION__`, and even which `__PRETTY_FUNCTION__` format a given compiler emits), so, as [§16.4 of the original notes already warned](#164-match-dispatch-mechanics) in spirit, nothing about the literal text of these messages should be treated as a stable interface. See [§18.8](#188-dont-build-tooling-around-the-exact-wording-of-abort-diagnostics) for the practical version of that warning.
+Bad-access diagnostics may include a type name. Formatting depends on the compiler and configuration. Treat the fact that a call aborts as behavior; exact message text and type-name formatting are not stable API.
 
 ### 16.6 Hashing
 
-`std::hash<rl::Option<T, Ts...>>` is defined only when every alternative is itself hashable via `std::hash`. Its behavior:
-
-- The empty state always hashes to the fixed sentinel `static_cast<std::size_t>(-3333)`, regardless of `T` or `Ts...`.
-- When there is at least one secondary alternative, an engaged state's hash is `std::hash<ActiveType>{}(value)` combined with the active index using `value_hash ^ (0x9e3779b9 + index + (value_hash << 6) + (value_hash >> 2))` — the same combine formula popularized by `boost::hash_combine`. This is what keeps, say, `Option<int, long>` holding `5` as an `int` from hashing identically to the same `Option` holding `5` as a `long`, even though `std::hash<int>(5) == std::hash<long>(5)` on common implementations.
-- When there are **zero** secondary alternatives, there is nothing to disambiguate against, so the combine step is skipped entirely: an engaged `Option<T>`'s hash is exactly `std::hash<T>` of the contained value, byte-for-byte identical to hashing a bare `T`. This is a simplification specific to the single-alternative case, not a documented cross-version guarantee.
-
-As with any hash function, collisions are possible and expected; `std::hash<rl::Option<...>>`'s only documented obligation is that equal `Option`s hash equal, which the sentinel and the per-alternative mixing above are both designed to uphold.
+`std::hash<rl::Option<T, Ts...>>` is enabled only when all alternatives are hashable. In the current implementation, `None` maps to a fixed sentinel value, while an engaged multi-alternative value combines the active index with the payload hash. Hash values and the mixing formula are not stable identifiers and must not be persisted or treated as unique.
 
 ### 16.7 Header side effects
 
-The header pushes and restores compiler diagnostic state for the compiler families it recognizes (Clang via `#pragma clang diagnostic push`/`pop`, GCC via the `#pragma GCC diagnostic` equivalents), with the final `pop` sitting at the very end of the file, after the closing `#endif` guards. This means the suppressed warnings (`-Wc++98-compat`, `-Wreserved-identifier`, and similar pedantic-compatibility warnings, among others) apply only while the header's own declarations are being parsed — they do not leak into code written after the `#include` line in the including translation unit.
-
-Three function-like macros used internally — `RL_LIFETIME_BOUND`, `RL_SUPPORTS_REFLECTION`, and `RL_IS_SUBVIEW_OR_SUBSTR` — are all explicitly `#undef`'d before the header's closing `#endif`. They do not leak into the including translation unit's macro namespace either, so there is no risk of an including file's own identically-named macro silently colliding with (or being silently overwritten by) this header's internal ones.
-
-The header also makes a global using-declaration for the `operator>>=` used by the pattern-matching DSL. This is intentional for the infix arm syntax, but it is still a global namespace exposure that users should be aware of.
+The header includes standard facilities needed by its implementation and exposes the documented names in namespace `rl`. It also imports the overloaded `>>=` operator for pattern-arm syntax. Keep examples explicit about other standard-library headers they use, and avoid depending on incidental transitive includes.
 
 ---
 
+
 ## 17. A nine-alternative walkthrough
 
-Every multi-alternative example earlier in this document uses two or three alternatives. This section works through a `rl::Option` with **nine** distinct alternative types — one primary plus eight secondaries — to make the scaling behavior described in [§16.1](#161-storage-model) concrete, and to show that `match()`'s compile-time coverage checking still works exactly the same way once the alternative list gets large.
-
-The motivating shape is a lexer token payload: a single scanned token can carry an integer literal, a floating-point literal, a boolean literal, a string literal, an identifier, an operator, a piece of punctuation, a keyword, or an explicit end-of-file marker — and, separately from all of that, a `Option` built around this type can itself be `None` when nothing has been scanned yet. That last distinction is exactly the kind of thing a `std::variant<...>` alone cannot express, but `rl::Option`'s separate empty state can: "no token yet" (`None`) is different from "a token that happens to be the explicit EOF marker" (an engaged `EofTag` alternative).
+This example uses nine distinct alternative types: a primary integer literal and eight secondary token kinds. `None` remains separate from an explicit end-of-file token.
 
 ```cpp
 #include "rl_option.hpp"
@@ -2081,48 +1506,41 @@ enum class Keyword { kw_if, kw_else, kw_while, kw_return, kw_fn };
 
 struct Identifier {
     std::string name;
-    friend auto operator==(const Identifier&, const Identifier&)
-        -> bool = default;
+    friend auto operator==(const Identifier&, const Identifier&) -> bool = default;
 };
 
 struct EofTag {
     friend auto operator==(const EofTag&, const EofTag&) -> bool = default;
 };
 
-// Primary (1): long long          -- integer literal
-// Secondaries (8): double, bool, std::string, Identifier,
-//                  Operator, Punct, Keyword, EofTag
 using Token = rl::Option<long long, double, bool, std::string, Identifier,
                          Operator, Punct, Keyword, EofTag>;
 
-void describe(const Token& token) {
+auto describe(const Token& token) -> void {
     token.match(
-        rl::None >>= [] {
-            std::println("<no token scanned yet>");
+        rl::None >>= [] { std::println("<no token scanned yet>"); },
+        [](const long long&) { return true; } >>= [](long long v) {
+            std::println("integer literal: {}", v);
         },
-        [](const long long&) { return true; } >>= [](long long value) {
-            std::println("int literal: {}", value);
+        [](const double&) { return true; } >>= [](double v) {
+            std::println("floating literal: {}", v);
         },
-        [](const double&) { return true; } >>= [](double value) {
-            std::println("float literal: {}", value);
+        rl::True >>= [](bool) { std::println("boolean literal: true"); },
+        rl::False >>= [](bool) { std::println("boolean literal: false"); },
+        [](const std::string&) { return true; } >>= [](const std::string& v) {
+            std::println("string literal: {}", v);
         },
-        [](const bool&) { return true; } >>= [](bool value) {
-            std::println("bool literal: {}", value);
+        [](const Identifier&) { return true; } >>= [](const Identifier& v) {
+            std::println("identifier: {}", v.name);
         },
-        [](const std::string&) { return true; } >>= [](const std::string& value) {
-            std::println("string literal: \"{}\"", value);
+        [](const Operator&) { return true; } >>= [](Operator v) {
+            std::println("operator #{}", static_cast<int>(v));
         },
-        [](const Identifier&) { return true; } >>= [](const Identifier& id) {
-            std::println("identifier: {}", id.name);
+        [](const Punct&) { return true; } >>= [](Punct v) {
+            std::println("punctuation #{}", static_cast<int>(v));
         },
-        [](const Operator&) { return true; } >>= [](Operator op) {
-            std::println("operator #{}", static_cast<int>(op));
-        },
-        [](const Punct&) { return true; } >>= [](Punct p) {
-            std::println("punctuation #{}", static_cast<int>(p));
-        },
-        [](const Keyword&) { return true; } >>= [](Keyword kw) {
-            std::println("keyword #{}", static_cast<int>(kw));
+        [](const Keyword&) { return true; } >>= [](Keyword v) {
+            std::println("keyword #{}", static_cast<int>(v));
         },
         [](const EofTag&) { return true; } >>= [] {
             std::println("end of file");
@@ -2130,329 +1548,306 @@ void describe(const Token& token) {
     );
 }
 
-int main() {
+auto main() -> int {
     Token empty(rl::None);
-    Token integer(rl::Some<long long>(42));
-    Token name(rl::Some(Identifier{"accumulator"}));
-    Token eof(rl::Some(EofTag{}));
+    Token integer = rl::Some<long long>(42);
+    Token name = rl::Some<Identifier>({"accumulator"});
+    Token eof = rl::Some<EofTag>({});
 
     describe(empty);
     describe(integer);
     describe(name);
     describe(eof);
 
-    std::println("integer holds long long: {}", integer.is_some<long long>());
     std::println("name holds Identifier: {}", name.is_some<Identifier>());
-    std::println("eof holds int: {}", eof.is_some<long long>());
+    std::println("EOF is an integer: {}", eof.is_some<long long>());
 }
 ```
 
-A few things worth calling out about this specific shape:
+The example chooses separate arms because each token kind has a different meaning. Exhaustiveness does not require this much repetition: a generic `SomeAny` arm can cover all engaged alternatives, while `Wild` can cover `None` too. A `bool` alternative needs both `rl::True` and `rl::False`,  or a suitable catch-all.
 
-- **Ten arms for ten states.** `match()` needs one arm for `None` plus one for each of the nine alternative types; omitting any one of them — including `EofTag`, which is easy to treat as an afterthought — fails the `static_assert` in [§6.4](#64-type-coverage-is-checked-runtime-guard-success-is-not) at compile time, not silently at runtime.
-- **The discriminator is still a single byte.** With `N = 9` (one primary plus eight secondaries), the discriminator needs to represent `10` possible values (`0` through `9`), which is still comfortably inside `unsigned char`'s range per [§16.1](#161-storage-model). Growing the alternative list further doesn't widen the discriminator until it would need to represent more than 256 states — an unusual thing to want from a single tagged value in the first place.
-- **The recursion depth for the deepest secondary is eight.** `EofTag`, the last secondary in the list, sits at the bottom of eight nested `Alternative_<...>` unions. Constructing an `EofTag` token — which happens every single time the lexer reaches end-of-file — placement-constructs seven empty wrapper unions before reaching the one that actually holds an `EofTag`, then constructs the (stateless) `EofTag` itself; destroying it undoes those same eight steps in reverse. None of that work is visible in the example above, but it is real object code generated once per secondary position, and it compounds with every alternative added after it — see [§18.9](#189-dont-grow-the-alternative-list-for-just-in-case-extensibility) for when that cost is and isn't worth it.
-- **`is_some<long long>()` on the `eof` token is simply `false`.** It does not throw, abort, or need a prior check; typed `is_some<Q>()` is always a safe query regardless of which alternative (if any) is actually active, which is exactly why the last line of `main()` above is safe to call even though it is checking for a type that obviously isn't the active one.
+The discriminator stores one value for `None`, the primary and eight secondary alternatives, plus an internal destruction marker. The marker affects the width calculation; a nine-alternative token still fits in the current byte-sized index. Secondary alternatives use recursively nested union storage, so deeper alternatives require more wrapper construction and destruction. Every alternative also contributes operations and template instantiations. The list should reflect types the program actually needs to distinguish.
 
-This is also a reasonable point at which to reconsider whether `rl::Option` with nine alternatives is the right tool at all, rather than, say, a conventional `enum class TokenKind` plus a `std::variant` or a hand-rolled tagged union designed around the lexer's actual hot path. `rl::Option` adds the separate `None` state and the pattern-matching convenience shown above; it does not remove the structural cost described in §16.1 of having many secondary alternatives. Whether that trade is worthwhile is a question about the specific program, not something this document can answer in the abstract — but §16.1's description of what "one more alternative" actually costs is the information needed to make that call deliberately instead of by accident.
+This shape is plausible for a lexer token because token kinds are mutually exclusive and the separate empty state represents "no token available." For throughput-sensitive token dispatch, compare it with `std::variant` or an enum-plus-payload representation using the real compiler, standard library, and workload. Source structure alone does not prove which implementation is faster.
 
 ---
 
 ## 18. Known pitfalls and anti-patterns
 
-This section collects behaviors that compile, run, and look reasonable, but that rest on an assumption the implementation does not actually honor. Each entry names the assumption, says what actually happens, and points back to the section that establishes it.
-
-### 18.1 Expecting `Option<T>()` to mean "empty"
+### 18.1 Expecting `Option<T>()` to mean empty
 
 ```cpp
-// rl::Option<int> count;  // Does not compile: Option() is deleted.
+// rl::Option<int> count; // Error: Option() is deleted.
 ```
-There is no implicit empty state reachable through default construction, an empty brace-initializer, or a default member initializer that omits an argument. Every `Option` must be constructed with `Some`, `None`, or `Default` (§4.1, §15.2). Code that is ported from `std::optional<T> count;` needs to become `rl::Option<int> count(rl::None);`, not a bare declaration.
+
+Use `rl::Option<int> count = rl::None;`. `Default` creates an engaged default value, not an empty object.
 
 ### 18.2 Treating `Option<T, E>` as `std::expected<T, E>`
 
-```cpp
-rl::Option<int, ParseError> parse(std::string_view text);
+A callback that accepts only `T` cannot be used with untargeted `map` on `Option<T, E>`; the compiler rejects it. That prevents silently dropping an unsupported error alternative. A targeted `map<T>` intentionally returns `None` when `E` is active, so it also does not preserve an error. Use `match()` when every state must be handled and the error must survive.
 
-// Looks like error-propagating chaining. It is not:
-auto doubled = parse(text).map([](int v) { return v * 2; });
-```
-If `parse(text)` actually produced the `ParseError` alternative, `map` silently discards it and returns an empty `Option<int>` — the specific error is gone, not just unobserved (§9.7). The same applies to `and_then`. If the error value needs to survive a transformation, use `match()` (§10.2) or write the transformation to check `is_some<ParseError>()` explicitly before falling back to the primary-only combinators.
+### 18.3 Calling `unwrap()` as if it threw a catchable error
 
-### 18.3 Calling `unwrap()`/`value()`/`expect()` as if they were exceptions
+Checked access failure prints a diagnostic and calls `std::abort()`. A `try/catch` block cannot recover from `abort()`. Check the state first or use `match()` when absence is expected.
 
-```cpp
-// This does not "throw a catchable error on empty":
-int n = maybe_count.unwrap();
-```
-A failed checked access prints to `stderr` and calls `std::abort()` (§14.1). There is no library-defined exception type involved, and wrapping the call in `try { ... } catch (...) { ... }` does not protect the program — `std::abort()` is not recoverable by a `catch` block. If a failure needs to be recoverable, check `is_some()` (or the typed `is_some<Q>()`) first, or route the whole decision through `match()`.
+### 18.4 Using `unwrap_unchecked()` as a fast path
 
-### 18.4 Using `unwrap_unchecked()` as a "fast path"
+`unwrap_unchecked()` performs no active-type check in any build. Calling it when the primary type is not active is undefined behavior. Use checked access unless profiling proves a need and the invariant is airtight.
 
-```cpp
-// Wrong: no verification that the primary alternative is active.
-const int fast = maybe_value.unwrap_unchecked();
-```
-This is not a cheaper version of `unwrap()` that happens to skip a branch in release builds while still being "basically safe." It is a direct read of the union storage with no discriminator check anywhere, in any build mode (§8.4, §16.1). If the primary alternative is not actually active, this is undefined behavior in the full sense — not "returns a wrong but harmless integer," but a condition the optimizer is entitled to assume cannot happen, with results that can go well beyond the value of that one expression. The only legitimate use is immediately after an `is_some<T>()` (or equivalent) check that the same thread has just performed and nothing has mutated the `Option` since.
+### 18.5 Assuming static exhaustiveness proves every guard will match
 
-### 18.5 Trusting compile-time coverage to mean runtime coverage
+A guard's type compatibility satisfies a type-coverage part of the compile-time check; its runtime result may still be false. End a guarded match with a fallback if there are values not covered by the guards.
+
+### 18.6 Writing one repetitive arm per alternative by habit
+
+Separate arms are useful when each type has distinct behavior, but exhaustive matching can use `SomeAny` for all engaged values or `Wild` for all values including `None`. Bool still needs the true and false cases or a catch-all. Prefer the simplest exhaustive structure that makes the handling clear.
+
+### 18.7 Assuming every rvalue call empties the source
 
 ```cpp
-value.match(
-    rl::None >>= [] { /* ... */ },
-    rl::Where([](int n) { return n > 0; }) >>= [](int n) { /* ... */ },
-    rl::Where([](int n) { return n < 0; }) >>= [](int n) { /* ... */ }
-    // No arm for n == 0.
-);
+auto&& reference = std::move(option).value(); // Source remains engaged.
+auto converted = std::move(option).unwrap_or_default(); // May move payload; source remains engaged.
 ```
-This compiles: both guards are invocable with `int`, so the primary type is statically "covered" for the purposes of §6.4's three `static_assert`s. It still aborts at runtime the moment `value` holds `0`, because neither guard's *runtime* result is `true` for that input (§6.4, §15.7, §16.4). The fix is not a different pattern syntax — it's making sure the guards are jointly exhaustive, normally by ending with `rl::Wild` or an unconditional handler.
 
-### 18.6 Pairing a value pattern with an ordinarily aligned lambda
+Rvalue behavior is member-specific (§15.9). If the source must be empty, call `reset()` explicitly after using the returned value, or use an extraction operation documented to reset on success.
 
-```cpp
-// Fails a static_assert, not a runtime check:
-value.match(
-    rl::None >>= [] {},
-    rl::Some(0) >>= [] { /* handle zero */ },   // error: alignment mismatch
-    rl::Wild >>= [](int n) { /* ... */ }
-);
-```
-`rl::Some(0)` has `int`'s alignment; an ordinary capture-less lambda typically has alignment `1`. `Arm_`'s layout requires the handler to supply the arm's trailing alignment (§6.5, §16.4), so this specific combination is rejected at compile time rather than silently costing an extra padding byte. Reach for `rl::Where([](int n) { return n == 0; })` instead of a raw value pattern whenever the handler is an ordinary lambda — the predicate and the handler then have compatible, usually-1, alignment.
+### 18.8 Depending on exact abort diagnostics
 
-### 18.7 Assuming every `std::move(option).method()` empties `option`
+Type-name formatting and diagnostic text depend on compiler features. Do not parse the full message or use it as a stable output protocol.
 
-```cpp
-std::string s = std::move(opt).value();   // opt is still engaged afterward.
-auto fallback = std::move(opt).or_else(supplier); // opt's own state is untouched by this call.
-```
-Only the extraction-flavored rvalue operations reset the source on success: `unwrap()`, `expect()`, `unwrap<Q>()`, `take()`, `emplace() &&`, the fallback-by-value functions, and the consuming rvalue overloads of `map`/`and_then`/`map_or`/`map_or_else`/`map_or_transform`/`is_some_and`/`is_none_or`. `value() &&` returns `T&&` without resetting anything, and `or_else() &&` moves the receiver *into its return value* without separately clearing the moved-from object (§15.9). Don't assume "I called it on an rvalue" is equivalent to "the source is now empty" — check the specific member in §19 (or re-read §15.9) rather than extrapolating from one operation to another.
+### 18.9 Growing the alternative list for speculative extensibility
 
-### 18.8 Don't build tooling around the exact wording of abort diagnostics
+Every additional alternative adds type constraints, generated operations, template work, and a case to reason about. Deep secondary alternatives also traverse more recursive union layers. Add an alternative when it represents a real, mutually exclusive state the caller needs to distinguish.
 
-```text
-Option<int>::unwrap() failed: Option does not wield any value.
-```
-The type name embedded in this message comes from either C++26 reflection or a hand-rolled `__PRETTY_FUNCTION__` parser, selected per translation unit based on feature-test macros (§16.5). Two otherwise-identical programs built with different compilers — or the same program built before and after a toolchain upgrade — can legitimately print differently formatted (but behaviorally identical) diagnostics for the exact same failure. Log-scraping or test assertions that pattern-match the literal text of these messages are coupling to an explicitly non-stable implementation detail, not to the library's documented behavior (which is simply: "this call aborts the process").
+### 18.10 Expecting `Default` to produce an empty Option
 
-### 18.9 Don't grow the alternative list for "just in case" extensibility
+`rl::Option<int> value = rl::Default;` is engaged with `int{}`. Use `None` when absence is intended.
 
-```cpp
-// Every one of these "just in case" alternatives has a real, compounding cost.
-using Config = rl::Option<std::string, int, double, bool, std::vector<int>,
-                          std::map<std::string, std::string>, /* ...and more */>;
-```
-Each secondary alternative adds one more level of nested union activation/deactivation on construction and destruction (§16.1), one more entry in every per-alternative dispatch table (copy, move, copy-assign, move-assign, equality, three-way comparison, same-alternative swap, hashing), and one more required arm in every `match()` that needs to stay exhaustive (§6.4). None of this shows up as a correctness problem — the type system and the `static_assert`s in §6.4 will still hold everyone honest — but it is compile-time cost, generated-code size, and `match()` verbosity that accrues whether or not the "just in case" alternative is ever actually constructed at runtime. Prefer the smallest alternative list that reflects types the calling code genuinely needs to distinguish at the type level, and reach for a narrower `Option<T, E>` (or a separate `Option` per concern) over a single `Option` with many secondary alternatives when the alternatives aren't actually mutually exclusive facets of one conceptual value.
+### 18.11 Expecting `match()` raw results to stay raw
 
-### 18.10 Expecting `Default` to produce an empty `Option`
+Non-void `match()` handlers return a materialized `Option` result. For example, integer results produce an `Option<int>`; heterogeneous handler results produce a multi-alternative Option after deduplication or consolidation. Use `match<void>` to discard branch results.
 
-```cpp
-rl::Option<int> value(rl::Default); // value.is_some() is true, not false.
-```
-`rl::Default` always engages an alternative — the primary type if it's default-constructible, otherwise the first default-constructible secondary (§3.3). It never produces `None`. Code migrating from `std::optional<T> value{};` (which is empty) to `rl::Option<T>` should use `rl::Option<T>(rl::None)`, not `rl::Option<T>(rl::Default)`, to preserve "starts empty" semantics.
+### 18.12 Relying on primitive-versus-class implicit unwrap rules
 
-### 18.11 Expecting `match()`'s non-`void` dispatch to auto-wrap a raw value in `Some`
+Do not make generic code depend on whether a compiler or wrapper implicitly exposes a primitive but preserves a class object. This library keeps the payload inside an Option result for both. Use `unwrap<Q>()` when a specific alternative must be extracted, `map<Q>` when it should be transformed while staying optional, and `match()` when alternatives need separate handling.
 
-```cpp
-// Does not compile in the supplied header's non-void dispatch path:
-// auto result = value.match(
-//     rl::None >>= [] { return 0; },
-//     rl::Wild >>= [](int n) { return n; }
-// );
-```
-The non-`void` dispatcher deduces an `Option`-shaped final result type and requires every handler to return something convertible to *that* type directly (§6.7). It does not take a raw `int` from one arm and silently wrap it in `Some<int>` for you. Write every non-`void` arm so it returns the already-wrapped final result type explicitly (an `rl::Option<...>` constructed with `Some(...)` or `None`), matching the pattern already shown in §6.7's working example.
+### 18.13 Keeping references or pointers across mutation
+
+A pointer view or lvalue accessor refers into the Option's active storage. Reset, assignment, emplace, replacement, swap, or destruction can invalidate it. The compiler does not enforce a borrow lifetime. Keep the view inside the period where the same active object is known to remain alive.
+
+### 18.14 Using a fallback conversion for unrelated alternatives
+
+`unwrap_or*` converts an active value to the primary type. If a secondary is not meaningfully convertible to the primary, do not force that conversion just to use a fallback helper. Handle the alternatives with `match()` or use a targeted operation.
 
 ---
 
+
 ## 19. Complete API reference
 
-This section lists the public vocabulary and member operations implemented by the supplied header. Constraints are summarized; the compiler's constrained overloads remain the final authority for a particular type.
+This is a practical inventory of the public names and main overload families in `include/rl_option.hpp`. The constrained overloads in the header determine whether a particular payload and callback combination is valid.
 
-### 19.1 Names in `namespace rl`
+### 19.1 Vocabulary and match patterns
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `Option<T, Ts...>` | Class template | Main value container |
-| `Some<T>` | Class template | Explicit wrapper for an engaged alternative |
-| `None` | `inline constexpr` object | Empty-state tag |
-| `Default` | `inline constexpr` object | Default-value construction and pattern tag |
-| `Wild` | `inline constexpr` object | Catch-all pattern including `None` |
-| `SomeAny` | `inline constexpr` object | Catch-all pattern for engaged values |
-| `Where(predicate)` | Function template | Named guard wrapper |
-| `operator>>=(pattern, handler)` | Imported function template | Builds a pattern-matching arm |
+| `Option<T, Ts...>` | Class template | Empty-or-one-of-a-closed-set value container |
+| `Some<T>` | Class template | Explicit engaged-alternative wrapper |
+| `None` | `rl` object | Empty-state tag |
+| `Default` | `rl` object | Construct an engaged default value; also a value pattern |
+| `Wild` | `rl` object | Catch-all that includes `None` |
+| `SomeAny` | `rl` object | Catch-all for engaged alternatives |
+| `True`, `False` | `rl` objects | Distinct bool-case pattern tags |
+| `operator>>=(pattern, handler)` | Imported operator | Forms a match arm |
 
-The header also specializes `std::hash` for `Option<T, Ts...>` when every alternative is hashable.
+The header also provides global compatibility objects `True_t` and `False_t`, backed by the same distinct bool marker types. `std::hash<Option<...>>` is available when every alternative is hashable.
 
 ### 19.2 `Some<T>`
 
-| Member | Qualifier | Requirements / result |
-|---|---|---|
-| `Some()` | — | Explicit; requires `T` default-constructible |
-| `Some(const T&)` | — | Explicit; requires `T` copy-constructible |
-| `Some(T&&)` | — | Explicit; requires `T` move-constructible |
-| `get()` | `const&` | `const T&` |
-| `get()` | `&` | `T&` |
-| `get()` | `&&` | `T&&` |
-| `get()` | `const&&` | `const T&&` |
-| `operator==(Some<T>, Some<T>)` | friend | Requires `T` equality-comparable |
+`Some<T>` has explicit value constructors, `get()` overloads preserving cv/ref category, and equality when `T` is equality-comparable. Spell the payload type explicitly as `Some<T>(value)` when constructing a wrapper; the examples use this form instead of CTAD. The `Option` constructors accepting `Some<T>` construct the selected declared alternative.
 
-The deduction guide lets `Some(value)` deduce `Some<T>` from the argument.
+### 19.3 Construction and assignment
 
-### 19.3 `Option<T, Ts...>`: construction and assignment
-
-| Operation | Requirements / behavior |
+| Operation | Behavior |
 |---|---|
 | `Option()` | Deleted |
-| `Option(Some<T>)` | Constructs the primary alternative |
-| `Option(Some<Q>)` | Constructs a declared secondary alternative `Q` |
-| `Option(None)` | Constructs the empty state |
-| `Option(Default)` | Constructs the primary type if default-constructible; otherwise the first default-constructible secondary |
-| `Option(const Option&)` | Requires every alternative copy-constructible |
-| `Option(Option&&)` | Requires every alternative move-constructible |
-| `operator=(const Option&)` | Requires every alternative copy-constructible and copy-assignable |
-| `operator=(Option&&)` | Requires every alternative move-constructible and move-assignable |
-| `operator=(Some<T>)` | Assigns/constructs the primary alternative |
-| `operator=(Some<Q>)` | Assigns/constructs a declared secondary alternative |
-| `operator=(None)` | Resets to empty |
-| `operator=(Default)` | Assigns/constructs the selected default alternative |
-| `operator=(value)` | Selects one alternative by exact-type match or unique constructibility |
+| `Option(None)` | Empty state |
+| `Option(Default)` | Primary if default-constructible, otherwise first default-constructible secondary |
+| `Option(Some<Q>)` | Constructs declared alternative `Q` |
+| Copy/move construction | Requires every alternative to support the requested operation |
+| Copy/move assignment | Requires relevant per-alternative construction and assignment capabilities |
+| Assignment from `Some<Q>`, `None`, `Default` | Explicit alternative, empty, or selected default state |
+| Assignment from bare `value` | Uses unique alternative selection; ambiguous conversions are rejected |
+| Cross-specialization converting constructor | Not provided |
 
-There is no converting constructor from a bare payload value and no general converting constructor between differently-shaped `Option` specializations.
+### 19.4 State and access
 
-### 19.4 `Option<T, Ts...>`: state and access
-
-| Member | Qualifiers | Scope |
-|---|---|---|
-| `explicit operator bool()` | `const` | Any engaged alternative |
-| `is_some()` | `const` | Any engaged alternative |
-| `has_any_engaged_value()` | `const` | Any engaged alternative |
-| `is_none()` | `const` | Empty state |
-| `is_some<Q>()` | `const` | Named alternative `Q` |
-| `is_default()` | `const` | Primary type only; requires default construction and equality |
-| `value()` | `const&`, `&`, `&&` | Checked primary access |
-| `operator*()` | `const&`, `&`, `&&` | Checked primary access |
-| `operator->()` | `const&`, `&` | Checked primary pointer access |
-| `unwrap()` | `const&`, `&`, `&&` | Checked primary access; rvalue overload extracts by value and resets |
-| `unwrap<Q>()` | `const&`, `&`, `&&` | Checked access to named alternative; rvalue overload extracts by value and resets |
-| `expect(message)` | `const&`, `&`, `&&` | Checked primary access with custom diagnostic |
-| `unwrap_none()` | `const&`, `&`, `&&` | Checks that the entire `Option` is empty |
-| `unwrap_unchecked()` | `const&`, `&`, `&&` | Unchecked primary access by value; invalid state is undefined behavior |
-
-### 19.5 `Option<T, Ts...>`: fallback and functional operations
-
-| Member | Qualifiers | Behavior |
-|---|---|---|
-| `unwrap_or(value)` | `const&`, `&`, `&&` | Primary value or eager fallback |
-| `unwrap_or_default()` | `const&`, `&`, `&&` | Primary value or `T{}` |
-| `unwrap_or_else(supplier)` | `const&`, `&`, `&&` | Primary value or lazy supplier result |
-| `map(operation)` | `const&`, `&`, `&&` | Transforms primary value to `Option<U>` |
-| `and_then(operation)` | `const&`, `&`, `&&` | Calls primary-value operation returning an `Option` |
-| `or_else(operation)` | `const&`, `&`, `&&` | Calls fallback only for `None`; preserves all engaged alternatives |
-| `map_or(operation, fallback)` | `const&`, `&`, `&&` | Primary transform or eager fallback |
-| `map_or_else(operation, supplier)` | `const&`, `&`, `&&` | Primary transform or lazy nullary supplier |
-| `map_or_transform(operation, fallback)` | `const&`, `&`, `&&` | Primary transform, optional `None` callback, or fallback |
-| `is_some_and(predicate)` | `const&`, `&`, `&&` | Tests the primary alternative; an rvalue receiver with an active primary is consumed and reset after the predicate call, irrespective of the returned boolean |
-| `is_none_or(predicate)` | `const&`, `&`, `&&` | True for `None` or a primary value satisfying the predicate; secondary state is false; an rvalue receiver with an active primary is consumed and reset after the predicate call |
-
-### 19.6 `Option<T, Ts...>`: mutation and pointer views
-
-| Member | Qualifiers | Behavior |
-|---|---|---|
-| `emplace(args...)` | `&` | Destroys current state, constructs primary `T`, returns `T&` |
-| `emplace(args...)` | `&&` | Constructs primary `T`, extracts by value, leaves source empty |
-| `reset()` | `&` | Destroys active value and sets `None` |
-| `take()` | `&` | Moves the whole `Option` out and resets source |
-| `replace(value)` | `&` | Stores a deduced alternative and returns the previous `Option` |
-| `swap(other)` | member | Exchanges two same-specialization objects |
-| `swap(lhs, rhs)` | friend | ADL-enabled swap |
-| `as_mut_ptr()` | `&` | `Option<T*>`; rvalue forms deleted |
-| `as_mut_ptr<Q>()` | `&` | `Option<Q*>`; requires declared alternative `Q`; rvalue forms deleted |
-| `as_immut_ptr()` | `const&` | `Option<const T*>`; rvalue forms deleted |
-| `as_immut_ptr<Q>()` | `const&` | `Option<const Q*>`; requires declared alternative `Q`; rvalue forms deleted |
-
-### 19.7 `Option<T, Ts...>`: comparisons
-
-| Expression | Availability |
+| Member family | Behavior |
 |---|---|
-| `option_a == option_b` | Requires every alternative equality-comparable |
-| `option <=> other_option` | Requires every alternative three-way comparable |
-| `option == None`, `None == option` | Always available |
-| `option <=> None`, `None <=> option` | Always available |
-| `option == Some<Q>`, `Some<Q> == option` | Requires `Q` to be a declared, equality-comparable alternative |
-| `option == Default`, `Default == option` | Requires the selected default alternative to be default-constructible and equality-comparable |
-| `option <=> Default`, `Default <=> option` | Single-type `Option<T>` only; requires default construction and three-way comparison |
+| `operator bool()`, `is_some()`, `has_any_engaged_value()`, `is_none()` | State queries |
+| `is_some<Q>()` | Query whether the named alternative is active |
+| `is_default()` | Compare the selected default-constructible alternative with its default value |
+| `value()`, `unwrap()`, `expect()`, `operator*`, `operator->` | Checked primary access |
+| `unwrap<Q>()` | Checked access to a named alternative |
+| `unwrap_none()` | Checked empty-state access |
+| `unwrap_unchecked()` | Unchecked primary payload read; invalid use is undefined behavior |
+| `unwrap_or*` | Convert active alternatives to primary `T`, or use fallback for `None`; `unwrap_or_default` uses `T{}` |
+
+Lvalue checked access generally returns a reference. Rvalue `unwrap`, `expect`, and `unwrap<Q>` extract by value and reset after success. Rvalue `value()` returns a reference and does not reset.
+
+### 19.5 Functional operations
+
+| Member family | Untargeted behavior | Targeted behavior |
+|---|---|---|
+| `map(f)` | Requires `f` for every alternative; returns Option of distinct result types | `map<Q>(f)` examines only `Q`, returns `Option<Res>` |
+| `and_then(f)` | Requires Option-returning `f` for every alternative; merges output alternatives | `and_then<Q>(f)` returns the callback's Option type |
+| `or_else(f)` | Runs only for `None`; preserves any active alternative | No targeted form |
+| `map_or(f, fallback)`, `map_or_else(f, supplier)` | Transform any active alternative; return a bare result | Targeted forms transform only `Q`; other cases use fallback |
+| `map_or_transform(f, fallback)` | Transforms all alternatives; supports an optional `None` callback | Targeted form transforms `Q`, uses fallback for other alternatives |
+| `is_some_and(p)`, `is_none_or(p)` | Predicate must support every alternative; return `bool` | Targeted forms inspect only `Q` |
+
+These methods have receiver-category-aware overloads. See §§8–9 and §15.9 for conversion and reset behavior.
+
+### 19.6 Mutation and pointer views
+
+| Member | Behavior |
+|---|---|
+| `emplace(args...)` | Replaces the current state with a primary `T` |
+| `emplace(args...) &&` | Creates the primary value, extracts it by value |
+| `reset()` | Destroys the active payload and becomes `None` |
+| `take()` | Moves the whole Option out and resets the source after success |
+| `replace(value)` | Replaces with the selected alternative and returns the prior Option |
+| `swap(other)` | Exchanges same-specialization objects |
+| `as_mut_ptr[<Q>]()`, `as_immut_ptr[<Q>]()` | Return non-owning pointer views; rvalue overloads are deleted |
+
+Pointer and reference views do not extend payload lifetime.
+
+### 19.7 Matching, comparisons, and hashing
+
+`match(arms...)` requires exhaustive type coverage, dispatches by active alternative, and returns `void` for all-void handlers or an Option-wrapped materialized result for non-void handlers. It does not reset the receiver automatically.
+
+Comparisons are available when their payload comparison requirements are met. `None` and `Some<Q>` comparisons have dedicated overloads. The `Default` three-way comparison is limited to single-type `Option<T>` in this revision. Hashing requires all alternatives to be hashable; hash values are not stable IDs.
 
 ---
 
 ## 20. Frequently asked questions
 
-### Does `Option<T>` start empty?
+### Is this a C++ standard-library type?
 
-No. `Option()` is deleted. Use `Option<T>(None)` for an empty value.
+No. `rl::Option` is a third-party library in this repository, not a committee-provided standard-library facility.
+
+### Why return `Option<Res>` from `map` instead of a raw primitive or class?
+
+Keeping the result inside `Option` gives primitive, class, and enum payloads the same contract: a transformation may be absent, so its result remains a container. It avoids type-category-dependent behavior where a primitive is implicitly extracted but a class remains wrapped. That kind of desugaring makes generic code harder to reason about and can create different unwrap rules for otherwise equivalent alternatives.
+
+Use `unwrap<Q>()` when a value should explicitly leave the container. Use `map<Q>` to transform one alternative while remaining optional, `and_then` to chain an Option-returning operation, and `match()` to make alternative handling exhaustive. This is deliberate strictness: the caller, not a primitive-versus-class heuristic, decides when extraction happens.
 
 ### Does `Option<T>` accept a bare `T` in its constructor?
 
-No. Use `Option<T>(Some(value))`. Bare payload assignment is available after an `Option` has been constructed.
+No. Engaged construction must use `Some<T>`, for example `rl::Option<T> value = rl::Some<T>(payload)`. The `Option` constructor from `Some<T>` is non-explicit, so this copy-initialization form works. The header has a separate bare-value assignment overload, but using `Some<T>` there also documents the intended alternative.
 
-### Is `Option<T, E>` equivalent to `std::expected<T, E>`?
+### Why does construction require `Some<T>`?
 
-No. It has three possible states: `None`, `T`, and `E`. Its primary-only combinators do not automatically preserve `E`. Use `match()` to inspect the alternatives explicitly.
+The wrapper makes the engaged state and intended payload explicit. It prevents a primitive, string literal, or class value from silently selecting an alternative through conversion ranking. Copy initialization from `Some<T>` remains convenient while creation of the wrapper itself is intentional.
 
-### Does `map()` preserve secondary alternatives?
+### Why are `True_t` and `False_t` separate from `true` and `false`?
 
-No. `map()` operates on the primary type. If a secondary alternative is active, it returns an empty `Option<U>`.
+They are distinct marker types for the two values of a bool alternative. A plain bool is a runtime value and does not prove to the type checker that both bool cases are covered. `rl::True` and `rl::False` (also exposed through `True_t` and `False_t`) let the exhaustive checker distinguish the cases.
 
-### Does `or_else()` run for a secondary alternative?
+### Why is exhaustiveness required? Can it be disabled?
 
-No. `or_else()` runs only for `None`. Any active alternative is preserved.
+The current API requires exhaustive type coverage. There is no switch to disable it. `SomeAny` and `Wild` provide concise catch-alls when every alternative does not need a separate arm. A guard alone cannot prove that it will match at runtime, so a fallback is still needed when guards may all fail.
 
-### Does `unwrap<Q>()` support a secondary type?
+### Why does failure abort? Is this Rust panic?
 
-Yes, when `Q` is one of the declared alternatives. The rvalue overload extracts by value and resets the source after success.
+The internal failure path is named `panic_`, but it is not Rust-style unwinding. A bad checked access or a runtime match with no matching arm prints a diagnostic and calls `std::abort()`; C++ destructors do not unwind through that failure. This treats violated access assumptions as fatal programming errors.
 
-### Does `value() &&` reset the source?
+The library does not promise that it never throws. Payload construction, move/copy, assignment, comparison, hash operations, and user callbacks can throw ordinary C++ exceptions when exceptions are enabled. Those exceptions propagate according to the operation and are distinct from aborting checked-access failures.
 
-No. It returns `T&&`. Use `std::move(option).unwrap()` or `take()` when extraction should leave the source empty.
+### Is it safe?
 
-### Can an alternative be a reference type?
+The checked accessors detect an empty or wrong active type before reading it, and the constrained combinators reject callbacks that cannot handle every declared alternative. The implementation also requires non-throwing destructors. Those properties do not make every operation non-throwing or eliminate dangling pointers, stale references, callback exceptions, or undefined behavior from `unwrap_unchecked()`. Treat it as a strict value type, not as a borrow checker or a universal safety proof.
 
-No. Alternatives must be object types. Use a pointer or `std::reference_wrapper<T>`.
+### Why use this library?
 
-### Can the same type appear more than once?
+Use it when one value must represent absence plus a closed set of mutually exclusive types, and when typed matching or explicit targeted combinators improve the call site's clarity. For plain optional storage, `std::optional` may be simpler. For standard error propagation, use `std::expected`. For maximum portability, a standard vocabulary type is usually preferable.
 
-No. The alternative list must contain distinct types after cv-qualification is removed.
+### Why is the implementation so complex?
 
-### Does `match()` prove that a runtime predicate always matches?
+The implementation combines owning union storage, conditional triviality, per-alternative operation dispatch, constrained all-alternative combinators, targeted overloads, exhaustive pattern checking, value-category forwarding, result materialization, and diagnostics. Each feature supports a specific contract, but together they increase source size, compiler work, and maintenance burden. The abstractions are not free; prefer a simpler standard type when these behaviors are unnecessary.
 
-No. Compile-time checking verifies type applicability. It cannot prove the result of a runtime predicate. If no arm accepts the active value at runtime, the dispatcher aborts.
+### Why can it take a long time to compile?
 
-### Does `match()` wrap raw non-void handler results automatically?
+Each alternative participates in storage and operation dispatch. Combinator constraints check callback validity across the alternative pack, while `match()` checks pattern applicability and result types across arms and alternatives. Larger packs and many distinct arm/callback types create more template instantiations and diagnostics. Keep alternative packs small, use the targeted overload when only one type matters, and avoid repeating large visitor definitions across many translation units when project organization permits.
 
-Not in the supplied header. The non-void dispatch path deduces an `Option`-shaped result but expects handlers to return a value convertible to that final result type. Return an explicit `Option<...>` from every non-void arm.
+### Is template metaprogramming Turing-complete?
 
-### How many alternatives can an `Option` have?
+C++ template instantiation and constant evaluation are Turing-complete in principle. That is a statement about the language's expressive power, not a practical target for this library. Compiler depth, memory, time, and diagnostic limits are finite; template machinery should encode useful constraints and dispatch, not arbitrary computation.
 
-There's no fixed cap in the API itself — the discriminator trait (§16.1) scales from `unsigned char` up to `std::size_t` as the alternative count grows, and `Alternative_`'s recursive union can nest arbitrarily deep. In practice, the per-alternative cost described in §16.1 and demonstrated in §17 (one more nested union activation, one more dispatch-table entry, one more required `match()` arm per secondary) grows with the list, so the practical limit is whatever amount of generated code and `match()` verbosity a given project is willing to accept, not a hard limit in the header. See §18.9 for why "add it just in case" is a bad default.
+### Is it slower than `std::visit`?
 
-### Can I print an `Option` directly?
+In the supplied benchmark, yes: `std::visit` was faster than `rl::Option::match()` by 13.8% in median elapsed time.
 
-No `std::formatter` specialization is supplied. Extract or match the value and print that. The reason to not implement `std::formatter` is because it breaks predictability of the returning values. And thus, any handler returned are always wrapped into Option<T> instead of `T`. They shall be unwrapped always. If primitive were unwrapped implicitly but the classes weren't, it would've destroyed the reasoning and immediately create ambiguous returns which must be handled explicitly.
+| Metric | `rl::Option::match()` (`a.out`) | `std::visit` (`Visitor.out`) | Difference |
+|---|---:|---:|---:|
+| Task-clock | 1.37 ms | **1.14 ms** | 16.8% lower |
+| CPU cycles | 808,730 | **673,950** | 16.7% lower; 134,780 cycles saved |
+| Instructions | 985,165 | **878,731** | 10.8% lower; 106,434 instructions eliminated |
+| Branches | 224,276 | **216,802** | 3.3% lower |
+| Branch misses | **4,494** | 4,835 | 7.6% higher |
+| Median elapsed time | 1.656 ms | **1.427 ms** | 13.8% faster |
 
-Mind your `unwrap()`. It is there for these reasons.
+This is evidence that `std::visit` is faster for the measured workload, not a universal percentage for every alternative set, compiler, or CPU. `match()` finds the active alternative with a linear discriminator scan and tests compatible arms in order, which can add dispatch work; the timing alone does not isolate how much of the gap comes from that path. For performance-sensitive code, benchmark the actual workload and consider `std::variant`/`std::visit` when its semantics fit.
 
-### Is the type thread-safe?
+### Why are callbacks and results kept wrapped?
 
-There is no internal synchronization. Concurrent mutation of the same instance requires external synchronization.
+Keeping `map` results in an Option gives one predictable type flow across primitive and class payloads. A nested Option returned by `map` remains a payload; use `and_then` when flattening the callback's Option is intended. Non-void `match()` also materializes branch results inside an Option result. Explicit unwrapping keeps extraction visible at the point where the caller has decided absence is handled.
 
-### Can it be used in constant expressions?
+### Can this later target C++20, C++17, C++14, or C++11?
 
-The public operations are broadly declared `constexpr`, and valid paths can be evaluated at compile time when the involved alternative and callback operations are also constant-evaluable. A path that reaches diagnostic I/O or `std::abort()` is not a valid constant expression.
+This revision supports C++26 only. A backport would be substantial: it would need replacements for explicit object parameters, pack indexing, `std::forward_like`, `std::unreachable`, `std::views::zip`, and other newer language/library facilities, as well as changes to the matching and constraint implementation. C++20 may be a more plausible redesign target than C++11, but it is not a mechanical switch and is not supported by this header.
+
+### Is there a free `Match(expression, arms...)` function?
+
+No. The public interface is `option.match(...)`. The source demo defines a local `match_value` adapter that wraps an expression in a temporary `Option<T>`; see §6.6. It is an example, not a library API.
+
+### How do I avoid dangling references and pointers?
+
+Keep access references and pointer views within the lifetime of the owning Option and do not mutate its active state while they are in use. `RL_LIFETIME_BOUND` can help diagnostics but cannot enforce a borrow relationship. If a value must outlive the Option, copy or move it out by value.
+
+### Does `match()` return a raw handler result?
+
+No. All-void handlers produce `void`; non-void handlers produce an Option-wrapped materialized result. Use `match<void>` to discard values. See §§6.7 and 16.4.
 
 ---
 
-## 21. License
+## 21. Test-suite map
 
-This project is licensed under the **GNU General Public License, version 3**.
+These tests are useful executable references for the documented rules. They are listed as navigation aids; this README update does not claim that they were run.
 
-SPDX-License-Identifier: `GPL-3.0`
+| Test file | What it demonstrates |
+|---|---|
+| `tests/test_active_mapping.cpp` | All-alternative mapping, targeted mapping, and the three alternative rules |
+| `tests/RLOption_tests.cpp` | Positive behavior and compile-time rejection of callbacks that miss alternatives |
+| `tests/match_exhaustive_positive.cpp` | Bool markers, catch-alls, value patterns, and exhaustive matching |
+| `tests/match_exhaustive_negative.cpp` | Rejection of missing bool cases, missing `None`, and partial coverage |
+| `tests/match_return_types_positive.cpp` | Automatic Option wrapping, heterogeneous results, common result types, and `match<void>` |
+| `tests/match_return_types_negative.cpp` | Rejection of mixed void and value-returning arms |
+| `tests/match_materialized_results.cpp` | By-value materialization of handler results, including references and move-only values |
+| `tests/match_constraints.cpp` | Constraint participation and callback/category requirements |
+| `tests/match_receiver_categories.cpp` | Forwarding based on const/lvalue/rvalue receiver category |
+| `tests/match_exception_propagation.cpp` | Ordinary callback exceptions propagate through matching |
+| `tests/dispatch_optimizations.cpp` | Compile-time elimination of inapplicable arms and dispatch order |
+| `tests/lifetime_regressions.cpp` | Replacement ordering, conversions, and lifetime regressions |
+| `tests/storage_reentrancy.cpp` | Discriminator boundaries and destruction reentrancy behavior |
+| `tests/monadic_materialization_constraints.cpp` | Combinator callback and result materialization constraints |
+| `tests/test_typed_lambda.cpp` | Predicate patterns, handlers, and `SomeAny` use |
+
+---
+
+## 22. License
+
+This project is licensed under the GNU General Public License, version 3 or later.
+
+SPDX-License-Identifier: `GPL-3.0-or-later`
 
 See the repository's `LICENSE` file for the full license text.
