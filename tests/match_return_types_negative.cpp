@@ -55,4 +55,7 @@ static_assert(!CanInferUnmaterializableResult<rl::Option<bool>,
                                                NonCopyableReferenceResult>);
 
 }
-int main() {}
+int main() {
+    NonCopyableReferenceResult handler;
+    (void)handler(true);
+}

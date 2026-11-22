@@ -58,11 +58,17 @@ concept CanMatchPredicateOnly = requires(O &option) {
 };
 
 template <class O>
-concept CanMatchWherePredicateOnly = requires(O &option) {
-    option.match(rl::Where([](const int &value) { return value > 10; }) >>=
-                     [](int value) { return value; },
-                 rl::None >>= [] { return 0; });
-};
+concept HasPublicValueType = requires { typename O::value_type; };
+
+template <class O> concept HasPublicSome = requires { &O::Some; };
+
+template <class O> concept HasPublicWild = requires { &O::Wild; };
+
+template <class O> concept HasPublicNone = requires { &O::None; };
+
+template <class O> concept HasPublicNoneFunction = requires { &O::none; };
+
+template <class O> concept HasPublicSomeAny = requires { &O::SomeAny; };
 
 static_assert(!CanMatchTrueOnly<rl::Option<bool>>);
 static_assert(!CanMatchFalseOnly<rl::Option<bool>>);
@@ -73,7 +79,12 @@ static_assert(!CanMatchOnlyPrimaryAlternative<rl::Option<int, double>>);
 static_assert(!CanMatchPartialValueOnly<rl::Option<int>>);
 static_assert(!CanMatchDefaultOnly<rl::Option<int>>);
 static_assert(!CanMatchPredicateOnly<rl::Option<int>>);
-static_assert(!CanMatchWherePredicateOnly<rl::Option<int>>);
+static_assert(!HasPublicValueType<rl::Option<int>>);
+static_assert(!HasPublicSome<rl::Option<int>>);
+static_assert(!HasPublicWild<rl::Option<int>>);
+static_assert(!HasPublicNone<rl::Option<int>>);
+static_assert(!HasPublicNoneFunction<rl::Option<int>>);
+static_assert(!HasPublicSomeAny<rl::Option<int>>);
 
 } // namespace
 

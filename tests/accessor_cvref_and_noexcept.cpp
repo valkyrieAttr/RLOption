@@ -85,7 +85,17 @@ static_assert(requires(rl::Option<Mutable> &&option) { std::move(option)->mutate
 } // namespace
 
 int main() {
+    NothrowNontrivial original{};
+    NothrowNontrivial copied{original};
+    NothrowNontrivial moved{std::move(copied)};
+    original = moved;
+    original = std::move(moved);
+
+    rl::Option<NothrowNontrivial> first{rl::Some(original)};
+    rl::Option<NothrowNontrivial> second{rl::Some(NothrowNontrivial{})};
+    second = first;
+
     rl::Option<Mutable> option{rl::Some(Mutable{})};
     std::move(option)->mutate();
-    return option.unwrap().calls == 1 ? 0 : 1;
+    return option.unwrap().calls == 1 && second.unwrap().value == 0 ? 0 : 1;
 }

@@ -60,26 +60,28 @@ struct ThrowingMoveSeed {};
 struct ThrowingMove {
     explicit ThrowingMove(ThrowingMoveSeed) noexcept {}
     ThrowingMove(const ThrowingMove &) = delete;
-    ThrowingMove(ThrowingMove &&) { throw std::runtime_error{"move failed"}; }
+    [[noreturn]] ThrowingMove(ThrowingMove &&) {
+        throw std::runtime_error{"move failed"};
+    }
     ~ThrowingMove() noexcept = default;
 };
 
 int main() {
     // Converting construction directly builds the selected alternative. It
     // therefore supports immovable alternatives and performs no extra move.
-    static_assert(std::is_constructible_v<rl::Option<ImmovableFromInt>, int>);
-    rl::Option<ImmovableFromInt> immovable{42};
+    static_assert(!std::is_constructible_v<rl::Option<ImmovableFromInt>, int>);
+    rl::Option<ImmovableFromInt> immovable{rl::Some(42)};
     check(immovable.unwrap().value == 42);
 
     MoveCounter::moves = 0;
-    rl::Option<MoveCounter> direct{7};
+    rl::Option<MoveCounter> direct{rl::Some(7)};
     check(direct.unwrap().value == 7);
     check(MoveCounter::moves == 0);
 
     // The deepest recursive alternative is destroyed exactly once when the
     // Option changes to its primary alternative and when reset is repeated.
     int live = 0;
-    rl::Option<int, char, std::string, Tracked> tracked{&live};
+    rl::Option<int, char, std::string, Tracked> tracked{rl::Some(&live)};
     check(live == 1);
     tracked = 12;
     check(live == 0);
@@ -120,11 +122,11 @@ int main() {
     throwing = 5;
     check(throwing.unwrap() == 5);
 
-    // Where() must decay the predicate object, not name the decay trait.
+    // Direct predicate arms must remain usable without a Where helper.
     rl::Option<int> positive{rl::Some{9}};
     auto matched = positive.match(
         rl::None >>= [] { return -1; },
-        rl::Where([](const int &value) { return value > 0; }) >>=
+        [](const int &value) { return value > 0; } >>=
             [](int value) { return value; },
         rl::SomeAny >>= [](int value) { return value; });
     check(matched.is_some());

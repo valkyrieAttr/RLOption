@@ -2,12 +2,28 @@
 
 #include <stdexcept>
 
+namespace {
+
+struct ThrowingSomeHandler_ {
+    [[noreturn]] int operator()() const {
+        throw std::runtime_error("some arm");
+    }
+};
+
+struct ThrowingNoneHandler_ {
+    [[noreturn]] int operator()() const {
+        throw std::runtime_error("none arm");
+    }
+};
+
+} // namespace
+
 int main() {
     rl::Option<bool> engaged{rl::Some(true)};
     bool caught_engaged = false;
     try {
         (void)engaged.match(
-            rl::True >>= []() -> int { throw std::runtime_error("some arm"); },
+            rl::True >>= ThrowingSomeHandler_{},
             rl::False >>= [] { return 0; },
             rl::None >>= [] { return -1; });
     } catch (const std::runtime_error &) {
@@ -20,9 +36,7 @@ int main() {
         (void)empty.match(
             rl::True >>= [] { return 1; },
             rl::False >>= [] { return 0; },
-            rl::None >>= []() -> int {
-                throw std::runtime_error("none arm");
-            });
+            rl::None >>= ThrowingNoneHandler_{});
     } catch (const std::runtime_error &) {
         caught_none = empty.is_none();
     }

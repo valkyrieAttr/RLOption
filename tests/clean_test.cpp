@@ -8,7 +8,6 @@
     #pragma clang diagnostic ignored "-Wpre-c++20-compat"
     #pragma clang diagnostic ignored "-Wpre-c++23-compat"
     #pragma clang diagnostic ignored "-Wpre-c++26-compat"
-    #pragma clang diagnostic ignored "-Wpadded"
     #pragma clang diagnostic ignored "-Wmissing-prototypes"
 #endif
 
@@ -184,7 +183,7 @@ static void test_pattern_matching() {
         rl::SomeAny >>= "fallback_some",
         rl::None >>= "empty"
     );
-    assert(res == "large");
+    assert(res == std::string{"large"});
 }
 
 int main() {

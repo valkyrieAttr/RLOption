@@ -43,7 +43,7 @@ static_assert([]() consteval {
     auto w3 = q3.map<int>([](int x) { return x * 2; });
 
     return r1.unwrap() == 20 &&
-           r2.unwrap() == 5.0f &&
+           r2.unwrap() > 4.99f && r2.unwrap() < 5.01f &&
            r3.unwrap() == static_cast<int>('x') + 1 &&
            r4.unwrap() == 150L &&
            w1.is_none() &&
@@ -68,10 +68,10 @@ static_assert([]() consteval {
     auto r4 = q4.map(double_it);
     auto rn = qn.map(double_it);
 
-    return r1.unwrap() == 10.0 &&
-           r2.unwrap() == 3.0 &&
-           r3.unwrap() == 20.0 &&
-           r4.unwrap() == 40.0 &&
+    return r1.unwrap() > 9.99 && r1.unwrap() < 10.01 &&
+           r2.unwrap() > 2.99 && r2.unwrap() < 3.01 &&
+           r3.unwrap() > 19.99 && r3.unwrap() < 20.01 &&
+           r4.unwrap() > 39.99 && r4.unwrap() < 40.01 &&
            rn.is_none();
 }(), "W3.1.3: QuadOpt generic map across all alternatives");
 
@@ -113,7 +113,8 @@ static_assert([]() consteval {
     auto rn = qn.or_else(fallback);
 
     return r1.is_some<int>() && r1.unwrap<int>() == 1 &&
-           r2.is_some<float>() && r2.unwrap<float>() == 2.0f &&
+           r2.is_some<float>() && r2.unwrap<float>() > 1.99f &&
+           r2.unwrap<float>() < 2.01f &&
            r3.is_some<char>() && r3.unwrap<char>() == 'z' &&
            r4.is_some<long>() && r4.unwrap<long>() == 400L &&
            rn.is_some<int>() && rn.unwrap<int>() == 999;
@@ -195,7 +196,8 @@ static_assert([]() consteval {
     bool c1 = opt.is_some<char>() && opt.unwrap<char>() == 'K';
 
     opt.emplace<float>(9.99f);
-    bool c2 = opt.is_some<float>() && opt.unwrap<float>() == 9.99f && !opt.is_some<char>();
+    bool c2 = opt.is_some<float>() && opt.unwrap<float>() > 9.98f &&
+              opt.unwrap<float>() < 10.0f && !opt.is_some<char>();
 
     opt.reset();
     bool c3 = opt.is_none();

@@ -8,6 +8,7 @@ struct OldValue {
     int member;
 
     explicit OldValue(OldTag, int value) : member(value) {}
+    OldValue(const OldValue &other) : member(other.member) {}
     ~OldValue() noexcept { member = -1; }
 };
 

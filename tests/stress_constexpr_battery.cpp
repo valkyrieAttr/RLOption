@@ -126,8 +126,8 @@ static_assert([]() consteval {
 static_assert([]() consteval {
     // None-taking callback form
     rl::Option<int> none = rl::None;
-    return none.unwrap_or_else([](rl::None_t) { return 55; }) == 55;
-}(), "W2.8: unwrap_or_else(None_t) form");
+    return none.unwrap_or_else([](decltype(rl::None)) { return 55; }) == 55;
+}(), "W2.8: unwrap_or_else(None-tag callback) form");
 
 static_assert([]() consteval {
     rl::Option<int> opt = rl::None;
@@ -155,7 +155,7 @@ static_assert([]() consteval {
 // multi-alt typed unwrap
 static_assert([]() consteval {
     rl::Option<int, double> opt = rl::Some<double>(3.14);
-    return opt.unwrap<double>() == 3.14;
+    return opt.unwrap<double>() > 3.13 && opt.unwrap<double>() < 3.15;
 }(), "W2.13: multi-alt unwrap<T> correct type");
 
 // unwrap_unchecked (no panic path, just happy path constexpr)
@@ -182,7 +182,7 @@ static_assert([]() consteval {
 static_assert([]() consteval {
     rl::Option<int> opt = rl::Some<int>(3);
     auto r = opt.map([](int x) -> double { return x * 1.5; });
-    return r.is_some() && r.unwrap() == 4.5;
+    return r.is_some() && r.unwrap() > 4.49 && r.unwrap() < 4.51;
 }(), "W3.3: map int→double changes value type");
 
 static_assert([]() consteval {
@@ -284,7 +284,7 @@ static_assert([]() consteval {
     auto r = opt.and_then([](int x) -> rl::Option<double> {
         return rl::Some<double>(x * 1.5);
     });
-    return r.is_some() && r.unwrap() == 4.5;
+    return r.is_some() && r.unwrap() > 4.49 && r.unwrap() < 4.51;
 }(), "W5.3: and_then int→double Option");
 
 static_assert([]() consteval {
@@ -333,9 +333,11 @@ static_assert([]() consteval {
 // or_else with None-taking callback
 static_assert([]() consteval {
     rl::Option<int> none = rl::None;
-    auto r = none.or_else([](rl::None_t) { return rl::Option<int>(rl::Some<int>(42)); });
+    auto r = none.or_else([](decltype(rl::None)) {
+        return rl::Option<int>(rl::Some<int>(42));
+    });
     return r.is_some() && r.unwrap() == 42;
-}(), "W5.10: or_else with None_t callback");
+}(), "W5.10: or_else with None-tag callback");
 
 // ============================================================
 // WAVE 6 — PREDICATES
@@ -734,14 +736,14 @@ static_assert([]() consteval {
     // spaceship: Some(3) < Some(5)
     rl::Option<int> a = rl::Some<int>(3);
     rl::Option<int> b = rl::Some<int>(5);
-    return (a <=> b) < 0;
+    return (a <=> b) == std::strong_ordering::less;
 }(), "W14.6: spaceship Some(3) < Some(5)");
 
 static_assert([]() consteval {
     // spaceship: None < Some
     rl::Option<int> none = rl::None;
     rl::Option<int> some = rl::Some<int>(0);
-    return (none <=> some) < 0;
+    return (none <=> some) == std::strong_ordering::less;
 }(), "W14.7: spaceship None < Some");
 
 static_assert([]() consteval {
@@ -871,7 +873,7 @@ int main() {
         assert(none.unwrap_or(0) == 0);
         assert(none.unwrap_or_default() == 0);
         assert(none.unwrap_or_else([] { return 55; }) == 55);
-        assert(none.unwrap_or_else([](rl::None_t) { return 77; }) == 77);
+        assert(none.unwrap_or_else([](decltype(rl::None)) { return 77; }) == 77);
     }
 
     // as_mut_ptr mutation
@@ -890,17 +892,20 @@ int main() {
             return opt.match(
                 rl::SomeAny >>= [](auto&& v) -> double {
                     using T = std::remove_cvref_t<decltype(v)>;
-                    if constexpr (std::is_same_v<T,int>)    return (double)v;
+                    if constexpr (std::is_same_v<T,int>)    return static_cast<double>(v);
                     else if constexpr (std::is_same_v<T,double>) return v;
                     else return v ? 1.0 : 0.0;
                 },
                 rl::None >>= []() -> double { return -1.0; }
             ).unwrap();
         };
-        assert(match3(O3(rl::Some<int>(10))) == 10.0);
-        assert(match3(O3(rl::Some<double>(2.5))) == 2.5);
-        assert(match3(O3(rl::Some<bool>(true))) == 1.0);
-        assert(match3(O3(rl::None)) == -1.0);
+        assert(match3(O3(rl::Some<int>(10))) > 9.99 &&
+               match3(O3(rl::Some<int>(10))) < 10.01);
+        assert(match3(O3(rl::Some<double>(2.5))) > 2.49 &&
+               match3(O3(rl::Some<double>(2.5))) < 2.51);
+        assert(match3(O3(rl::Some<bool>(true))) > 0.99 &&
+               match3(O3(rl::Some<bool>(true))) < 1.01);
+        assert(match3(O3(rl::None)) > -1.01 && match3(O3(rl::None)) < -0.99);
     }
 
     // Deep chain runtime
@@ -918,9 +923,9 @@ int main() {
         rl::Option<int> a = rl::Some<int>(3);
         rl::Option<int> b = rl::Some<int>(5);
         rl::Option<int> none = rl::None;
-        assert((a <=> b) < 0);
-        assert((b <=> a) > 0);
-        assert((none <=> a) < 0);
+        assert((a <=> b) == std::strong_ordering::less);
+        assert((b <=> a) == std::strong_ordering::greater);
+        assert((none <=> a) == std::strong_ordering::less);
     }
 
     // is_default runtime

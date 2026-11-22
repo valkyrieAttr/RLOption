@@ -1,4 +1,6 @@
 #include "rl_option.hpp"
+#include <bit>
+#include <cstdint>
 #include <string_view>
 #include <compare>
 #include <cassert>
@@ -51,7 +53,8 @@ consteval auto test_multi_opt_lifecycle() {
     // Emplace alternative 1 (double)
     opt.emplace<double>(3.14);
     if (!opt.is_some() || opt.is_some<int>() || !opt.is_some<double>()) return false;
-    if (opt.unwrap<double>() != 3.14) return false;
+    if (std::bit_cast<std::uint64_t>(opt.unwrap<double>()) !=
+        std::bit_cast<std::uint64_t>(3.14)) return false;
 
     // Emplace alternative 2 (string_view)
     opt.emplace<std::string_view>("compile_time");
@@ -211,6 +214,7 @@ static_assert(test_comptime_swap());
 // 8. Universal cvref matrix on monadic and accessor APIs (const &&)
 consteval auto test_comptime_const_rvalue() {
     const rl::Option<int> opt = rl::Some(50);
+    bool unchecked_matches_ = false;
     // map const &&
     auto m = std::move(opt).map([](int x) { return x + 1; });
     if (!m.is_some() || m.unwrap() != 51) return false;
@@ -239,7 +243,7 @@ consteval auto test_comptime_const_rvalue() {
     if (std::move(opt).unwrap_or_default() != 50) return false;
 
     // unwrap_unchecked const &&
-    if (std::move(opt).unwrap_unchecked() != 50) return false;
+    unchecked_matches_ = std::move(opt).unwrap_unchecked() == 50;
 
     // unwrap_or_else const &&
     if (std::move(opt).unwrap_or_else([] { return 0; }) != 50) return false;
@@ -251,7 +255,7 @@ consteval auto test_comptime_const_rvalue() {
     if (std::move(none_opt).unwrap_or_default() != 0) return false;
     if (std::move(none_opt).unwrap_or_else([] { return 99; }) != 99) return false;
 
-    return true;
+    return unchecked_matches_;
 }
 static_assert(test_comptime_const_rvalue());
 

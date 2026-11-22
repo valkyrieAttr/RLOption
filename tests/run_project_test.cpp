@@ -13,7 +13,6 @@
     #pragma clang diagnostic ignored "-Wpre-c++23-compat-pedantic"
     #pragma clang diagnostic ignored "-Wpre-c++26-compat"
     #pragma clang diagnostic ignored "-Wpre-c++26-compat-pedantic"
-    #pragma clang diagnostic ignored "-Wpadded"
     #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
     #pragma clang diagnostic ignored "-Wglobal-constructors"
     #pragma clang diagnostic ignored "-Wexit-time-destructors"
@@ -659,10 +658,10 @@ extern "C++" auto main
         ).value();
         assert(r3 == 1042);
 
-        // 4. Guard Pattern (Where_)
+        // 4. Nullary predicate pattern
         int r4 = opt.match<int>(
             rl::None >>= []() -> int { return 0; },
-            rl::Where([](const int& v) { return v > 40; }) >>= [](int x) -> int { return x * 10; },
+            [](const int& v) { return v > 40; } >>= [](int x) -> int { return x * 10; },
             rl::SomeAny >>= [](int x) -> int { return x; }
         ).value();
         assert(r4 == 420);
@@ -773,6 +772,7 @@ extern "C++" auto main
     {
         struct MultiArg {
             int a;
+            rl::details::PadToAlignment_<sizeof(int), alignof(long)> pad{};
             long b;
             std::string c;
             MultiArg(int x, long y, std::string z) : a(x), b(y), c(std::move(z)) {}
@@ -839,11 +839,11 @@ extern "C++" auto main
         ).value();
         assert(r3 == -100);
 
-        // 4. Boolean guard: Where([&] { return expr; }) >>= handler
+        // 4. Boolean guard: a nullary callable pattern >>= handler
         int z = 42;
         int r4 = opt.match<int>(
             rl::None >>= []() -> int { return 0; },
-            rl::Where([&] { return z == 42; }) >>= [](int x) -> int { return x + 100; },
+            [&] { return z == 42; } >>= [](int x) -> int { return x + 100; },
             rl::SomeAny >>= [](int x) -> int { return x; }
         ).value();
         assert(r4 == 142);
@@ -851,7 +851,7 @@ extern "C++" auto main
         // 5. Boolean guard: false -> skipped, falls through
         int r5 = opt.match<int>(
             rl::None >>= []() -> int { return 0; },
-            rl::Where([&] { return z == 999; }) >>= [](int) -> int { return -1; },
+            [&] { return z == 999; } >>= [](int) -> int { return -1; },
             rl::SomeAny >>= [](int x) -> int { return x * 2; }
         ).value();
         assert(r5 == 84);
@@ -859,7 +859,7 @@ extern "C++" auto main
         // 6. Boolean guard with direct value handler
         int r6 = opt.match<int>(
             rl::None >>= 0,
-            rl::Where([] { return true; }) >>= 777,
+            [] { return true; } >>= 777,
             rl::SomeAny >>= 0
         ).value();
         assert(r6 == 777);
@@ -881,10 +881,10 @@ extern "C++" auto main
         ).value();
         assert(r8 == 126);
 
-        // 9. Mixing Where() with predicate
+        // 9. Mixing a nullary callable with a value predicate
         int r9 = opt.match<int>(
             rl::None >>= []() -> int { return 0; },
-            rl::Where([](const int& v) { return v == 42; }) >>= []() -> int { return 1000; },
+            [](const int& v) { return v == 42; } >>= []() -> int { return 1000; },
             [](const int& v) { return v > 50; } >>= [](int x) -> int { return x; },
             rl::SomeAny >>= [](int x) -> int { return x; }
         ).value();
@@ -903,7 +903,7 @@ extern "C++" auto main
             rl::None >>= 0,
             rl::Some(42) >>= 10,
             [](const int& v) { return v < 10; } >>= 2,
-            rl::Where([&] { return z == 42; }) >>= 3,
+            [&] { return z == 42; } >>= 3,
             rl::Wild >>= 4
         ).value();
         assert(r11 == 10);

@@ -1,4 +1,6 @@
 
+#include <rl_option.hpp>
+
 #include <iostream>
 #include <utility>
 #include <cassert>
@@ -20,6 +22,10 @@ struct ThrowSecond {
 struct Testrl {
     ThrowSecond val;
     bool engaged = true;
+    [[no_unique_address]] rl::details::PadToAlignment_<
+        rl::details::align_up_(sizeof(ThrowSecond), alignof(bool)) +
+            sizeof(bool),
+        rl::details::max_alignof_<ThrowSecond, bool>()> tail_padding{};
 
     void reset() {
         engaged = false;
@@ -29,6 +35,10 @@ struct Testrl {
     struct ResetOnSuccess_ {
         Testrl* owner_;
         int initial_uncaught_ = 0;
+        [[no_unique_address]] rl::details::PadToAlignment_<
+            rl::details::align_up_(sizeof(Testrl *), alignof(int)) +
+                sizeof(int),
+            rl::details::max_alignof_<Testrl *, int>()> tail_padding{};
 
         explicit ResetOnSuccess_(Testrl* owner) noexcept : owner_(owner) {
             initial_uncaught_ = std::uncaught_exceptions();

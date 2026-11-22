@@ -8,7 +8,6 @@ namespace {
 struct Source {
     Source() = default;
     Source(const Source &) = delete;
-    Source(Source &&) = default;
 };
 
 struct ConversionTarget {

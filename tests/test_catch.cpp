@@ -1,11 +1,13 @@
 
+#include <rl_option.hpp>
+
 #include <iostream>
 #include <utility>
 #include <cassert>
 
 struct ThrowFirst {
     ThrowFirst() = default;
-    ThrowFirst(ThrowFirst&&) {
+    [[noreturn]] ThrowFirst(ThrowFirst&&) {
         throw 1;
     }
 };
@@ -31,6 +33,10 @@ ThrowSecond make_throw_second_move(ThrowSecond &&value) {
 struct Testrl {
     ThrowSecond val;
     bool engaged = true;
+    [[no_unique_address]] rl::details::PadToAlignment_<
+        rl::details::align_up_(sizeof(ThrowSecond), alignof(bool)) +
+            sizeof(bool),
+        rl::details::max_alignof_<ThrowSecond, bool>()> tail_padding{};
 
     void reset() {
         engaged = false;

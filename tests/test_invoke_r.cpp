@@ -1,8 +1,10 @@
 #include "rl_option.hpp"
+
+#include <functional>
 #include <iostream>
 
 int main() {
-    auto f = [](int x) { return x * 2; };
+    auto f = [](int x) { return rl::Some(x * 2); };
     static_assert(std::is_invocable_r_v<rl::Option<int>, decltype(f), int>);
     
     auto fn_none = []() { return rl::None; };

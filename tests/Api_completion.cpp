@@ -119,7 +119,7 @@ int main() {
     auto catch_all_result = single_int.match(
         rl::None >>= [] { return 0; },
         rl::Wild >>= [](int value) { return value + 1; },
-        rl::Where([](const int &) { return true; }) >>=
+        [](const int &) { return true; } >>=
             [](int) { return std::string{"unreachable"}; });
     static_assert(std::same_as<decltype(catch_all_result), rl::Option<int>>);
     check(catch_all_result.unwrap<int>() == 5);

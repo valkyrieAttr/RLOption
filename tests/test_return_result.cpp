@@ -1,4 +1,6 @@
 
+#include <rl_option.hpp>
+
 #include <iostream>
 #include <utility>
 #include <cassert>
@@ -19,6 +21,10 @@ struct ThrowSecond {
 struct Testrl {
     ThrowSecond val;
     bool engaged = true;
+    [[no_unique_address]] rl::details::PadToAlignment_<
+        rl::details::align_up_(sizeof(ThrowSecond), alignof(bool)) +
+            sizeof(bool),
+        rl::details::max_alignof_<ThrowSecond, bool>()> tail_padding{};
 
     void reset() {
         engaged = false;

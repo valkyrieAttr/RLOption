@@ -48,11 +48,11 @@ struct MapOrAll {
 
 struct MapOrAllWithNone : MapOrAll {
     using MapOrAll::operator();
-    constexpr int operator()(rl::None_t) const noexcept { return 99; }
+    constexpr int operator()(decltype(rl::None)) const noexcept { return 99; }
 };
 
 struct NoneOnlyMapOrTransform {
-    constexpr int operator()(rl::None_t) const noexcept { return 99; }
+    constexpr int operator()(decltype(rl::None)) const noexcept { return 99; }
     int operator()(int) const = delete;
     int operator()(double) const = delete;
 };
@@ -506,12 +506,14 @@ struct ThrowingMoveResult {
     }
 };
 
+struct ThrowingIntMap {
+    [[noreturn]] int operator()(int &&) const { throw 1; }
+};
+
 constexpr bool test_runtime_throwing_callback_preserves_rvalue_source() {
     Option<int> source{Some(10)};
     try {
-        (void)std::move(source).map([](int &&) -> int {
-            throw 1;
-        });
+        (void)std::move(source).map(ThrowingIntMap{});
     } catch (int value) {
         return value == 1 && source.is_some();
     }

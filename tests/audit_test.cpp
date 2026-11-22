@@ -17,6 +17,8 @@ struct ThrowMoveNoexceptCopy {
     ThrowMoveNoexceptCopy(const ThrowMoveNoexceptCopy& o) noexcept : v(o.v) {
         copy_count++;
     }
+
+    [[noreturn]]
     ThrowMoveNoexceptCopy(ThrowMoveNoexceptCopy&&) noexcept(false) {
         move_count++;
         throw 99;

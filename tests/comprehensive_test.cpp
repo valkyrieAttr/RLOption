@@ -1,5 +1,6 @@
 #include "rl_option.hpp"
 #include <cassert>
+#include <cmath>
 #include <string>
 #include <memory>
 #include <type_traits>
@@ -92,10 +93,10 @@ int main() {
     assert(!m1.is_some<double>());
     Multirl m2 = m1;
     assert(m2.is_some<float>());
-    assert(m2.unwrap<float>() == 3.14f);
+    assert(std::abs(m2.unwrap<float>() - 3.14f) < 1.0e-6f);
     Multirl m3 = std::move(m1);
     assert(m3.is_some<float>());
-    assert(m3.unwrap<float>() == 3.14f);
+    assert(std::abs(m3.unwrap<float>() - 3.14f) < 1.0e-6f);
 
     // =========================================================================
     // 7. Test operator>>= and pattern matching

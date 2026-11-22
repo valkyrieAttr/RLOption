@@ -19,6 +19,9 @@ struct ReentrantValue {
     constexpr explicit ReentrantValue(ReentrantOption *owner_arg = nullptr)
         : owner(owner_arg) {}
 
+    constexpr ReentrantValue(const ReentrantValue &other)
+        : owner(other.owner) {}
+
     constexpr ~ReentrantValue() noexcept {
         ++destruction_count;
         if (owner != nullptr) {

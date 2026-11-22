@@ -1,6 +1,7 @@
 #include "rl_option.hpp"
 #include <cassert>
 #include <concepts>
+#include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -24,6 +25,8 @@ void check(bool condition) {
 // =============================================================================
 struct alignas(64) OveralignedHandler {
     int factor = 2;
+    [[no_unique_address]] rl::details::PadToAlignment_<sizeof(factor), 64>
+        padding{};
     int operator()(int x) const { return x * factor; }
 };
 
@@ -325,15 +328,23 @@ void test_review01() {
 // =============================================================================
 // REVIEW-02: Mutable predicate lambdas
 // =============================================================================
+struct MutablePredicateState {
+    int *observed_count;
+    int call_count{};
+    [[no_unique_address]] rl::details::PadToAlignment_<
+        sizeof(int *) + sizeof(int), alignof(int *)> padding{};
+};
+
 void test_review02() {
     rl::Option<int> opt = rl::Some(5);
     int observed_count = 0;
     auto res = opt.match(
-        [&observed_count, call_count = 0](int x) mutable {
-            call_count++;
-            observed_count = call_count;
-            return x == 5;
-        } >>= [](int) { return "matched mutable"; },
+        [state_ = MutablePredicateState{&observed_count, 0}](int value_) mutable {
+            ++state_.call_count;
+            *state_.observed_count = state_.call_count;
+            return value_ == 5;
+        } >>=
+            [](int) { return "matched mutable"; },
         rl::None >>= [] { return "none"; },
         rl::Wild >>= [](auto&&) { return "wild"; }
     );

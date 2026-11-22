@@ -502,14 +502,11 @@ void test_section_3_floats_spaceship_pointers() {
 
 #if defined(__cpp_exceptions)
 
-// Suppress padding warning for ThrowOnCopy — the extra bool member is intentional.
-#if defined(__clang__)
-#   pragma clang diagnostic push
-#   pragma clang diagnostic ignored "-Wpadded"
-#endif
 struct ThrowOnCopy {
     int val;
     bool should_throw = false;
+    [[no_unique_address]] rl::details::PadToAlignment_<
+        sizeof(int) + sizeof(bool), alignof(int)> padding{};
 
     ThrowOnCopy(int v = 0, bool t = false) : val(v), should_throw(t) {}
 
@@ -523,9 +520,6 @@ struct ThrowOnCopy {
     ThrowOnCopy& operator=(const ThrowOnCopy&) = default;
     ThrowOnCopy& operator=(ThrowOnCopy&&) noexcept = default;
 };
-#if defined(__clang__)
-#   pragma clang diagnostic pop
-#endif
 
 void test_section_4_exception_safety() {
     std::cout << "--- Running Section 4: Exception Safety ---\n";
@@ -550,7 +544,7 @@ void test_section_4_exception_safety() {
     // 2. Throwing Predicates in match
     {
         struct ThrowingPred {
-            bool operator()(int) const {
+            [[noreturn]] bool operator()(int) const {
                 throw std::logic_error("predicate explosion");
             }
         };
@@ -575,13 +569,17 @@ void test_section_4_exception_safety() {
 
     // 3. Throwing Handler in match
     {
+        struct ThrowingHandler {
+            [[noreturn]] int operator()(int) const {
+                throw std::runtime_error("handler explosion");
+            }
+        };
+
         rl::Option<int> opt = rl::Some(42);
         bool caught = false;
         try {
             auto res = opt.match(
-                rl::Some(42) >>= [](int) -> int {
-                    throw std::runtime_error("handler explosion");
-                },
+                rl::Some(42) >>= ThrowingHandler{},
                 rl::SomeAny >>= [] { return 0; },
                 rl::None >>= [] { return 0; }
             );
@@ -615,18 +613,18 @@ void test_section_5_variadic_multi_type() {
     using QuadOption = rl::Option<int, std::string, double, char>;
 
     // 1. Value construction into each alternative
-    QuadOption oInt = 42;
+    QuadOption oInt = rl::Some(42);
     TEST_ASSERT(oInt.is_some<int>());
     TEST_ASSERT(!oInt.is_some<std::string>());
     TEST_ASSERT(!oInt.is_some<double>());
     TEST_ASSERT(!oInt.is_some<char>());
     TEST_ASSERT(oInt.unwrap<int>() == 42);
 
-    QuadOption oStr = std::string("variadic string");
+    QuadOption oStr = rl::Some(std::string("variadic string"));
     TEST_ASSERT(oStr.is_some<std::string>());
     TEST_ASSERT(oStr.unwrap<std::string>() == "variadic string");
 
-    QuadOption oDbl = 3.14159;
+    QuadOption oDbl = rl::Some(3.14159);
     TEST_ASSERT(oDbl.is_some<double>());
 #if defined(__clang__)
 #   pragma clang diagnostic push
@@ -637,7 +635,7 @@ void test_section_5_variadic_multi_type() {
 #   pragma clang diagnostic pop
 #endif
 
-    QuadOption oChar = 'Z';
+    QuadOption oChar = rl::Some('Z');
     TEST_ASSERT(oChar.is_some<char>());
     TEST_ASSERT(oChar.unwrap<char>() == 'Z');
 
@@ -666,10 +664,10 @@ void test_section_5_variadic_multi_type() {
     TEST_ASSERT(oInt.unwrap<int>() == 999);
 
     // 3. Equality between multi-type options
-    QuadOption oA = 42;
-    QuadOption oB = 42;
-    QuadOption oC = 43;
-    QuadOption oD = std::string("42");
+    QuadOption oA = rl::Some(42);
+    QuadOption oB = rl::Some(42);
+    QuadOption oC = rl::Some(43);
+    QuadOption oD = rl::Some(std::string("42"));
     QuadOption oNone = rl::None;
 
     TEST_ASSERT(oA == oB);
@@ -679,8 +677,8 @@ void test_section_5_variadic_multi_type() {
     TEST_ASSERT(oNone == oNone);
 
     // 4. Swapping multi-type options
-    QuadOption swap1 = 123;
-    QuadOption swap2 = std::string("swapped!");
+    QuadOption swap1 = rl::Some(123);
+    QuadOption swap2 = rl::Some(std::string("swapped!"));
     swap1.swap(swap2);
     TEST_ASSERT(swap1.is_some<std::string>() && swap1.unwrap<std::string>() == "swapped!");
     TEST_ASSERT(swap2.is_some<int>() && swap2.unwrap<int>() == 123);
@@ -724,7 +722,33 @@ void test_section_6_pattern_matching_edge_cases() {
         TEST_ASSERT(hit3 == 3); // SomeAny catch-all
     }
 
-    // 2. Reference forwarding: lvalue vs const lvalue vs rvalue matching
+    // 2. Floating exact cases use equality semantics for NaN and signed zero.
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        rl::Option<double> nan_option = rl::Some(nan);
+        const auto nan_result = nan_option.match(
+            rl::Some(nan) >>= [](double) { return 1; },
+            rl::SomeAny >>= [](double) { return 2; },
+            rl::None >>= [] { return 3; });
+        TEST_ASSERT(nan_result.unwrap() == 2);
+
+        rl::Option<double> negative_zero = rl::Some(-0.0);
+        const auto signed_zero_result = negative_zero.match(
+            rl::Some(0.0) >>= [](double) { return 4; },
+            rl::SomeAny >>= [](double) { return 5; },
+            rl::None >>= [] { return 6; });
+        TEST_ASSERT(signed_zero_result.unwrap() == 4);
+
+        const double infinity = std::numeric_limits<double>::infinity();
+        rl::Option<double> infinite_option = rl::Some(infinity);
+        const auto infinity_result = infinite_option.match(
+            rl::Some(infinity) >>= [](double) { return 7; },
+            rl::SomeAny >>= [](double) { return 8; },
+            rl::None >>= [] { return 9; });
+        TEST_ASSERT(infinity_result.unwrap() == 7);
+    }
+
+    // 3. Reference forwarding: lvalue vs const lvalue vs rvalue matching
     {
         rl::Option<std::string> lvalrl = rl::Some<std::string>("original");
         bool taken_by_ref = false;
@@ -762,7 +786,7 @@ void test_section_6_pattern_matching_edge_cases() {
         TEST_ASSERT(taken_by_rval);
     }
 
-    // 3. Common return type deduction into Option<T>
+    // 4. Common return type deduction into Option<T>
     {
         rl::Option<int, std::string, double> multi = rl::Some(100);
 
@@ -804,7 +828,7 @@ void test_section_6_pattern_matching_edge_cases() {
 #endif
     }
 
-    // 4. Arms returning direct values without lambdas: returns Option<T>
+    // 5. Arms returning direct values without lambdas: returns Option<T>
     {
         rl::Option<int> opt = rl::Some(1);
         auto valRes = opt.match(
@@ -825,7 +849,7 @@ void test_section_6_pattern_matching_edge_cases() {
         TEST_ASSERT(valResNone.is_some() && valResNone.unwrap() == 300);
     }
 
-    // 5. Explicit single-type template argument: match<std::string>
+    // 6. Explicit single-type template argument: match<std::string>
     {
         rl::Option<int> opt = rl::Some(7);
         auto explicitSingle = opt.template match<std::string>(
@@ -836,7 +860,7 @@ void test_section_6_pattern_matching_edge_cases() {
         static_assert(std::same_as<decltype(explicitSingle), rl::Option<std::string>>);
         TEST_ASSERT(explicitSingle.is_some() && explicitSingle.unwrap() == "70");
 
-        // 6. Test .match() alias
+        // 7. Test .match() alias
         auto aliasSingle = opt.template match<std::string>(
             rl::Some(7) >>= [](int x) { return std::to_string(x * 100); },
             rl::SomeAny >>= [] { return std::string("other"); },
@@ -846,7 +870,7 @@ void test_section_6_pattern_matching_edge_cases() {
         TEST_ASSERT(aliasSingle.is_some() && aliasSingle.unwrap() == "700");
     }
 
-    // 7. Dynamic multi-type return: returns Option<int, std::string> when arms have disparate types
+    // 8. Dynamic multi-type return: returns Option<int, std::string> when arms have disparate types
     {
         rl::Option<int> opt = rl::Some(5);
         auto multiRes = opt.match(
@@ -1134,7 +1158,8 @@ void test_section_10_rust_lifetimes_and_stress() {
 
     // 3. Variadic Multi-Type as_immut_ptr() & as_mut_ptr()
     {
-        rl::Option<int, std::string, double> multi = std::string("rust_borrow");
+        rl::Option<int, std::string, double> multi =
+            rl::Some(std::string("rust_borrow"));
         auto str_ref = multi.template as_immut_ptr<std::string>();
         TEST_ASSERT(str_ref.is_some());
         TEST_ASSERT(*str_ref.unwrap() == "rust_borrow");
@@ -1201,7 +1226,8 @@ void test_section_10_rust_lifetimes_and_stress() {
 
     // 6. Variadic Multi-Type take() & replace()
     {
-        rl::Option<int, std::string> multi = std::string("variadic_payload");
+        rl::Option<int, std::string> multi =
+            rl::Some(std::string("variadic_payload"));
         TEST_ASSERT(multi.is_some<std::string>());
         auto taken = multi.take();
         TEST_ASSERT(taken.is_some<std::string>() && taken.unwrap<std::string>() == "variadic_payload");
@@ -1278,7 +1304,7 @@ void test_section_10_rust_lifetimes_and_stress() {
 
         for (int i = 0; i < NUM_ITERATIONS; ++i) {
             if (i % 2 == 0) {
-                rl::Option<int, std::string> opt = i;
+                rl::Option<int, std::string> opt = rl::Some(i);
                 auto r = opt.as_immut_ptr();
                 if (!r.is_some() || *r.unwrap() != i) {
                     TEST_ASSERT(false);
@@ -1308,7 +1334,8 @@ void test_section_10_rust_lifetimes_and_stress() {
                     TEST_ASSERT(false);
                 }
             } else {
-                rl::Option<int, std::string> opt = std::string("stress_test_payload");
+                rl::Option<int, std::string> opt =
+                    rl::Some(std::string("stress_test_payload"));
                 auto r = opt.template as_immut_ptr<std::string>();
                 if (!r.is_some() || *r.unwrap() != "stress_test_payload") {
                     TEST_ASSERT(false);

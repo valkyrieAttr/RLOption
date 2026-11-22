@@ -33,7 +33,7 @@ void test_finding_2_automatic_deduction() {
 
 void test_finding_3_throwing_predicates() {
     struct ThrowingPred {
-        bool operator()(int) const {
+        [[noreturn]] bool operator()(int) const {
             throw std::runtime_error("predicate failed");
         }
     };
@@ -166,15 +166,16 @@ void test_multi_type_explicit_match() {
 
 void test_converting_constructors_and_assignments() {
     // Construction from value
-    rl::Option<int, std::string> o1 = 123;
+    rl::Option<int, std::string> o1 = rl::Some(123);
     assert(o1.is_some());
     assert(o1.unwrap<int>() == 123);
 
-    rl::Option<int, std::string> o2 = "string_val";
+    rl::Option<int, std::string> o2 =
+        rl::Some<std::string>("string_val");
     assert(o2.is_some());
     assert(o2.unwrap<std::string>() == "string_val");
 
-    rl::Option<int> single = 777;
+    rl::Option<int> single = rl::Some(777);
     assert(single.is_some());
     assert(single.unwrap() == 777);
 

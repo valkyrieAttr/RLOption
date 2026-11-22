@@ -84,10 +84,10 @@ int main() {
     bool first_predicate_called = false;
     auto ordered_result = value.match<int>(
         rl::None >>= [] { return -1; },
-        rl::Where([&](const int &current) {
+        [&](const int &current) {
             first_predicate_called = true;
             return current == 17;
-        }) >>= [](int current) { return current * 2; },
+        } >>= [](int current) { return current * 2; },
         rl::Wild >>= [](int) { return 999; });
     check(first_predicate_called);
     check(*ordered_result == 34);

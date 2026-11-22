@@ -1,42 +1,52 @@
-
 #include <compare>
 #include <concepts>
 #include <type_traits>
 
-template<typename Up_>
-struct __compare_three_way_result { using type = void; };
+namespace {
 
-template<typename Up_>
-    requires std::three_way_comparable<Up_>
-struct __compare_three_way_result<Up_> {
-    using type = std::compare_three_way_result_t<Up_>;
+template <class T_>
+struct compare_three_way_result_for_test_ {
+    using type = void;
 };
 
-template<typename Up_>
-using __compare_three_way_result_t = typename __compare_three_way_result<Up_>::type;
+template <class T_>
+    requires std::three_way_comparable<T_>
+struct compare_three_way_result_for_test_<T_> {
+    using type = std::compare_three_way_result_t<T_>;
+};
 
-template<typename Tp_>
-struct Myrl {
-    bool is_some() const { return true; }
-    const Tp_& operator*() const { return val; }
-    Tp_ val{};
+template <class T_>
+using compare_three_way_result_for_test_t_ =
+    typename compare_three_way_result_for_test_<T_>::type;
 
-    friend constexpr auto operator<=>
-        ( const Myrl<Tp_>& lhs , const Myrl<Tp_>& rhs )
-    -> __compare_three_way_result_t<Tp_>
-        requires ( std::three_way_comparable<Tp_> )
+template <class T_>
+struct MyOption_ {
+    T_ value_{};
+
+    [[nodiscard]] constexpr auto is_some() const noexcept -> bool {
+        return true;
+    }
+
+    [[nodiscard]] constexpr auto operator*() const noexcept -> const T_ & {
+        return value_;
+    }
+
+    friend constexpr auto operator<=>(const MyOption_ &lhs_,
+                                      const MyOption_ &rhs_)
+        -> compare_three_way_result_for_test_t_<T_>
+        requires std::three_way_comparable<T_>
     {
-        if ( lhs.is_some ( ) && rhs.is_some ( ) )
-        {
-            return *lhs <=> *rhs;
+        if (lhs_.is_some() && rhs_.is_some()) {
+            return *lhs_ <=> *rhs_;
         }
-        return lhs.is_some ( ) <=> rhs.is_some ( );
+        return lhs_.is_some() <=> rhs_.is_some();
     }
 };
 
-struct Immovable {};
+struct Immovable_ {};
 
-int main() {
-    static_assert(!std::three_way_comparable<Myrl<Immovable>>);
-    return 0;
-}
+static_assert(!std::three_way_comparable<MyOption_<Immovable_>>);
+
+} // namespace
+
+int main() {}

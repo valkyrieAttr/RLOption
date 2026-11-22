@@ -1,4 +1,6 @@
 
+#include <rl_option.hpp>
+
 #include <iostream>
 #include <utility>
 #include <type_traits>
@@ -29,6 +31,10 @@ template<typename Qp_>
 struct OptionalMove {
     Storage<Qp_> storage;
     bool is_some;
+    [[no_unique_address]] rl::details::PadToAlignment_<
+        rl::details::align_up_(sizeof(Storage<Qp_>), alignof(bool)) +
+            sizeof(bool),
+        rl::details::max_alignof_<Storage<Qp_>, bool>()> tail_padding{};
 
     constexpr OptionalMove(int x) : storage{x}, is_some(true) {}
 

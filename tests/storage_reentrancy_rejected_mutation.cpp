@@ -9,6 +9,8 @@ struct ReentrantValue {
     explicit ReentrantValue(ReentrantOption *owner_arg = nullptr)
         : owner(owner_arg) {}
 
+    ReentrantValue(const ReentrantValue &other) : owner(other.owner) {}
+
     ~ReentrantValue() noexcept {
         if (owner != nullptr) {
             owner->emplace<int>(7);

@@ -1,17 +1,27 @@
 #include "rl_option.hpp"
 
 #include <concepts>
+#include <cstddef>
 #include <type_traits>
 
 namespace {
 
 struct alignas(64) OverAlignedHandler {
+    std::byte marker{};
+    rl::details::PadToAlignment_<sizeof(marker), 64> padding{};
+
     constexpr int operator()(int value) const noexcept { return value + 1; }
 };
 
 struct alignas(64) OverAlignedPredicate {
+    std::byte marker{};
+    rl::details::PadToAlignment_<sizeof(marker), 64> padding{};
+
     constexpr bool operator()(int value) const noexcept { return value == 7; }
 };
+
+static_assert(sizeof(OverAlignedHandler) == 64);
+static_assert(sizeof(OverAlignedPredicate) == 64);
 
 template <class O>
 concept CanMatchCompleteBool = requires(O &option) {
@@ -77,7 +87,7 @@ consteval auto verify_ordinary_and_overaligned_arms() -> bool {
         rl::SomeAny >>= some_fallback,
         rl::None >>= none_handler);
     const auto aligned_predicate_result = guarded.match(
-        rl::Where(OverAlignedPredicate{}) >>= captureless,
+        OverAlignedPredicate{} >>= captureless,
         rl::SomeAny >>= OverAlignedHandler{},
         rl::None >>= none_handler);
 

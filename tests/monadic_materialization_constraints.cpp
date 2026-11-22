@@ -7,6 +7,14 @@
 
 namespace {
 
+// These fixtures are exercised through requires-expressions only; their
+// callable bodies are intentionally never emitted into a runtime test.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunneeded-member-function"
+#pragma clang diagnostic ignored "-Wunused-member-function"
+#endif
+
 struct NonCopyable {
     NonCopyable() = default;
     NonCopyable(const NonCopyable &) = delete;
@@ -35,7 +43,9 @@ struct FallbackUniqueReference {
 
 struct MapUniqueByNone {
     std::unique_ptr<int> operator()(int) const { return std::make_unique<int>(1); }
-    std::unique_ptr<int> &operator()(rl::None_t) const { return unique_result; }
+    std::unique_ptr<int> &operator()(decltype(rl::None)) const {
+        return unique_result;
+    }
 };
 
 struct ChainNonCopyableReference {
@@ -88,6 +98,10 @@ struct ChainOptionConstLvalue {
 struct ChainOptionRvalue {
     rl::Option<int> &&operator()(int) const { return std::move(chain_option); }
 };
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 template <typename O, typename F>
 concept CanMap = requires(O &option, F &callback) {

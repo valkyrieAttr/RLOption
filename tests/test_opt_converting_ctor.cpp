@@ -1,61 +1,46 @@
-#include "rl_option.hpp"
-#include <iostream>
+#include <rl_option.hpp>
+
+#include <concepts>
 #include <string>
-#include <cassert>
+#include <type_traits>
 
-namespace __ZN4Lib_5impl_4opt_6cxx26_8symbols_E::__1::__details {
+namespace {
 
-template<typename Up_, typename... Types_>
-struct match_alternative_ {
-    template<typename T_>
-    static constexpr bool is_exact = std::same_as<std::remove_cvref_t<Up_>, T_>;
+using StringOption_ = rl::Option<int, std::string>;
+using TextLiteral_ = const char (&)[6];
 
-    static constexpr std::size_t exact_count = ( (is_exact<Types_> ? 1 : 0) + ... );
+static_assert(std::same_as<
+              rl::details::match_alternative_<int, int, std::string>::type,
+              int>);
+static_assert(std::same_as<rl::details::match_alternative_<
+                               TextLiteral_, int, std::string>::type,
+                           std::string>);
+static_assert(rl::details::match_alternative_<
+              TextLiteral_, int, std::string>::valid);
 
-    template<typename T_>
-    static constexpr bool is_conv = std::is_constructible_v<T_, Up_>;
+// Raw values stay explicitly rejected; Some<T> is the construction path.
+static_assert(!std::constructible_from<StringOption_, int>);
+static_assert(!std::constructible_from<StringOption_, const char *>);
+static_assert(std::constructible_from<StringOption_, decltype(rl::Some(7))>);
+static_assert(std::constructible_from<
+              StringOption_, decltype(rl::Some(std::string{"text"}))>);
+static_assert(std::constructible_from<
+              StringOption_, decltype(rl::Some<const char *>("text"))>);
 
-    static constexpr std::size_t conv_count = ( (is_conv<Types_> ? 1 : 0) + ... );
-
-    template<typename First_, typename... Rest_>
-    static constexpr auto find_exact() {
-        if constexpr (is_exact<First_>) {
-            return std::type_identity<First_>{};
-        } else if constexpr (sizeof...(Rest_) > 0) {
-            return find_exact<Rest_...>();
-        }
-    }
-
-    template<typename First_, typename... Rest_>
-    static constexpr auto find_conv() {
-        if constexpr (is_conv<First_>) {
-            return std::type_identity<First_>{};
-        } else if constexpr (sizeof...(Rest_) > 0) {
-            return find_conv<Rest_...>();
-        }
-    }
-
-    static constexpr bool valid = (exact_count == 1) || (exact_count == 0 && conv_count == 1);
-
-    using type = typename decltype([] {
-        if constexpr (exact_count == 1) {
-            return find_exact<Types_...>();
-        } else if constexpr (exact_count == 0 && conv_count == 1) {
-            return find_conv<Types_...>();
-        } else {
-            return std::type_identity<void>{};
-        }
-    }())::type;
-};
-
-}
+} // namespace
 
 int main() {
-    using rlIntStr [[maybe_unused]] = rl::Option<int, std::string>;
-    // Check match_alternative_
-    static_assert(std::same_as<__ZN4Lib_5impl_4opt_6cxx26_8symbols_E::__1::__details::match_alternative_<int, int, std::string>::type, int>);
-    static_assert(std::same_as<__ZN4Lib_5impl_4opt_6cxx26_8symbols_E::__1::__details::match_alternative_<const char*, int, std::string>::type, std::string>);
+    StringOption_ primary{rl::Some(7)};
+    StringOption_ converted{rl::Some<const char *>("mapped")};
 
-    std::cout << "Traits valid!\n";
+    if (!primary.is_some<int>() || primary.unwrap<int>() != 7) {
+        return 1;
+    }
+
+    if (!converted.is_some<std::string>() ||
+        converted.unwrap<std::string>() != "mapped") {
+        return 2;
+    }
+
     return 0;
 }

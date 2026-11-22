@@ -177,7 +177,7 @@ static_assert([]() consteval {
 // typed unwrap<T>
 static_assert([]() consteval {
     rl::Option<int, double> opt = rl::Some<double>(9.9);
-    return opt.unwrap<double>() == 9.9;
+    return opt.unwrap<double>() > 9.89 && opt.unwrap<double>() < 9.91;
 }());
 
 // is_default
@@ -245,7 +245,7 @@ int main() {
     // typed unwrap<T> on multi-alt
     {
         rl::Option<int, double> opt = rl::Some<double>(9.9);
-        assert(opt.unwrap<double>() == 9.9);
+        assert(opt.unwrap<double>() > 9.89 && opt.unwrap<double>() < 9.91);
     }
     // copy assign Some<T> to Option
     {

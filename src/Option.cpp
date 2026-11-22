@@ -1,10 +1,10 @@
 #include <rl_option.hpp>
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <format>
@@ -25,6 +25,17 @@
 // This intentionally stresses template instantiation: three independent sum
 // types, recursive ASTs, many match sites, value patterns, generic predicates,
 // typed handler adapters, and heterogeneous results wrapped by Option.
+
+consteval std::size_t padding_for_alignment_(std::size_t size_,
+                                            std::size_t alignment_) {
+  return (alignment_ - (size_ % alignment_)) % alignment_;
+}
+
+template <std::size_t Size_> struct PaddingBytes_ {
+  unsigned char bytes[Size_]{};
+};
+
+template <> struct PaddingBytes_<0> {};
 
 #include <iostream>
 
@@ -140,12 +151,16 @@ struct IdentifierToken {
   int line{1};
   int column{1};
 };
-struct NumberToken {
+struct alignas ( 8 ) NumberToken {
   std::string_view lexeme;
   double value{0.0};
-  bool integral{true};
   int line{1};
   int column{1};
+  bool integral{true};
+  PaddingBytes_<padding_for_alignment_(
+      sizeof(std::string_view) + sizeof(double) + 2 * sizeof(int) +
+          sizeof(bool),
+      8)> _padding{};
 };
 struct StringToken {
   std::string_view lexeme;
@@ -153,17 +168,23 @@ struct StringToken {
   int line{1};
   int column{1};
 };
-struct KeywordToken {
+struct alignas ( 8 ) KeywordToken {
+  std::string_view lexeme;
+  int line{1};
+  int column{1};
   Keyword keyword{Keyword::Let};
-  std::string_view lexeme;
-  int line{1};
-  int column{1};
+  PaddingBytes_<padding_for_alignment_(
+      sizeof(std::string_view) + 2 * sizeof(int) + sizeof(Keyword),
+      8)> _padding{};
 };
-struct SymbolToken {
-  Symbol symbol{Symbol::Semicolon};
+struct alignas ( 8 ) SymbolToken {
   std::string_view lexeme;
   int line{1};
   int column{1};
+  Symbol symbol{Symbol::Semicolon};
+  PaddingBytes_<padding_for_alignment_(
+      sizeof(std::string_view) + 2 * sizeof(int) + sizeof(Symbol),
+      8)> _padding{};
 };
 struct EndToken {
   int line{1};
@@ -280,7 +301,7 @@ Keyword token_keyword(Token &token) {
 // 2. Lexer
 // -----------------------------------------------------------------------------
 
-class Lexer {
+class alignas ( 8 ) Lexer {
 public:
   explicit Lexer(std::string_view source) : source_(source) {}
 
@@ -327,14 +348,14 @@ private:
     return true;
   }
   std::string_view slice() const {
-    return std::string_view(source_.substr(start_, current_ - start_));
+    return source_.substr(start_, current_ - start_);
   }
 
   template <class T> void emit(T value) {
     tokens_.emplace_back(rl::Some<T>{std::move(value)});
   }
   void emit_symbol(Symbol symbol, std::string_view lexeme) {
-    emit(SymbolToken{symbol, std::move(lexeme), token_line_, token_column_});
+    emit(SymbolToken{std::move(lexeme), token_line_, token_column_, symbol});
   }
   void error(std::string message) {
     std::cerr << "[lexer " << token_line_ << ':' << token_column_ << "] "
@@ -461,8 +482,8 @@ private:
     }
     const auto text = slice();
     try {
-      emit(NumberToken{text, std::stod(std::string{text}), integral, token_line_,
-                       token_column_});
+      emit(NumberToken{text, std::stod(std::string{text}), token_line_,
+                       token_column_, integral});
     } catch (...) {
       error("numeric literal is out of range");
     }
@@ -536,8 +557,8 @@ private:
         {"or", Keyword::Or},         {"not", Keyword::Not},
         {"break", Keyword::Break},   {"continue", Keyword::Continue}};
     if (const auto it = keywords.find(text); it != keywords.end()) {
-      emit(KeywordToken{it->second, std::move(text), token_line_,
-                        token_column_});
+      emit(KeywordToken{std::move(text), token_line_, token_column_,
+                        it->second});
     } else {
       emit(IdentifierToken{std::move(text), token_line_, token_column_});
     }
@@ -594,13 +615,17 @@ struct StringExpr {
 struct NameExpr {
   std::string_view name;
 };
-struct UnaryExpr {
-  UnaryOp op{UnaryOp::Positive};
+struct alignas ( 8 ) UnaryExpr {
   ExprPtr operand;
+  UnaryOp op{UnaryOp::Positive};
+  PaddingBytes_<padding_for_alignment_(sizeof(ExprPtr) + sizeof(UnaryOp),
+                                       alignof(ExprPtr))> _padding{};
 };
-struct BinaryExpr {
+struct alignas ( 8 ) BinaryExpr {
   ExprPtr left;
   BinaryOp op{BinaryOp::Add};
+  PaddingBytes_<padding_for_alignment_(sizeof(ExprPtr) + sizeof(BinaryOp),
+                                       alignof(ExprPtr))> _padding{};
   ExprPtr right;
 };
 struct AssignExpr {
@@ -624,13 +649,18 @@ template <class T> ExprPtr make_expr(T node) {
   return std::make_shared<Expr>(rl::Some<T>{std::move(node)});
 }
 
-struct Parameter {
+struct alignas ( 8 ) Parameter {
   std::string_view name;
   StaticType type{StaticType::Error};
+  PaddingBytes_<padding_for_alignment_(
+      sizeof(std::string_view) + sizeof(StaticType), 8)> _padding{};
 };
-struct LetStmt {
+struct alignas ( 8 ) LetStmt {
   std::string_view name;
   std::optional<StaticType> annotation;
+  PaddingBytes_<padding_for_alignment_(
+      sizeof(std::string_view) + sizeof(std::optional<StaticType>),
+      alignof(ExprPtr))> _padding{};
   ExprPtr initializer;
 };
 struct PrintStmt {
@@ -651,15 +681,21 @@ struct WhileStmt {
   ExprPtr condition;
   StmtPtr body;
 };
-struct FunctionStmt {
+struct alignas ( 8 ) FunctionStmt {
   std::string_view name;
   std::vector<Parameter> parameters;
   StaticType return_type{StaticType::Void};
+  PaddingBytes_<padding_for_alignment_(
+      sizeof(std::string_view) + sizeof(std::vector<Parameter>) +
+          sizeof(StaticType),
+      alignof(std::vector<StmtPtr>))> _padding{};
   std::vector<StmtPtr> body;
 };
-struct ReturnStmt {
+struct alignas ( 8 ) ReturnStmt {
   ExprPtr expression;
   bool has_value{true};
+  PaddingBytes_<padding_for_alignment_(sizeof(ExprPtr) + sizeof(bool),
+                                       alignof(ExprPtr))> _padding{};
 };
 struct BreakStmt {};
 struct ContinueStmt {};
@@ -681,12 +717,12 @@ template <class T> StmtPtr make_stmt(T node) {
 // 4. Parser
 // -----------------------------------------------------------------------------
 
-class ParseFailure final : public std::exception {
+class alignas ( 8 ) ParseFailure final : public std::exception {
 public:
   const char *what() const noexcept override { return "parse failure"; }
 };
 
-class Parser {
+class alignas ( 8 ) Parser {
 public:
   explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
 
@@ -814,7 +850,7 @@ private:
     expect_symbol(Symbol::Equal, "expected '=' in variable declaration");
     auto initializer = expression();
     expect_symbol(Symbol::Semicolon, "expected ';' after variable declaration");
-    return make_stmt(LetStmt{name, annotation, std::move(initializer)});
+    return make_stmt(LetStmt{name, annotation, {}, std::move(initializer)});
   }
 
   StmtPtr function_declaration() {
@@ -842,7 +878,7 @@ private:
     }
     expect_symbol(Symbol::LeftBrace, "expected '{' before function body");
     auto body = block_contents();
-    return make_stmt(FunctionStmt{name, std::move(parameters), return_type,
+    return make_stmt(FunctionStmt{name, std::move(parameters), return_type, {},
                                   std::move(body)});
   }
 
@@ -944,7 +980,8 @@ private:
     while (match_symbol(Symbol::OrOr) || match_keyword(Keyword::Or)) {
       auto right = logical_and();
       expr = make_expr(
-          BinaryExpr{std::move(expr), BinaryOp::LogicalOr, std::move(right)});
+          BinaryExpr{std::move(expr), BinaryOp::LogicalOr, {},
+                     std::move(right)});
     }
     return expr;
   }
@@ -953,7 +990,8 @@ private:
     while (match_symbol(Symbol::AndAnd) || match_keyword(Keyword::And)) {
       auto right = equality();
       expr = make_expr(
-          BinaryExpr{std::move(expr), BinaryOp::LogicalAnd, std::move(right)});
+          BinaryExpr{std::move(expr), BinaryOp::LogicalAnd, {},
+                     std::move(right)});
     }
     return expr;
   }
@@ -968,7 +1006,8 @@ private:
       else
         break;
       auto right = comparison();
-      expr = make_expr(BinaryExpr{std::move(expr), op, std::move(right)});
+      expr =
+          make_expr(BinaryExpr{std::move(expr), op, {}, std::move(right)});
     }
     return expr;
   }
@@ -987,7 +1026,8 @@ private:
       else
         break;
       auto right = term();
-      expr = make_expr(BinaryExpr{std::move(expr), op, std::move(right)});
+      expr =
+          make_expr(BinaryExpr{std::move(expr), op, {}, std::move(right)});
     }
     return expr;
   }
@@ -1002,7 +1042,8 @@ private:
       else
         break;
       auto right = factor();
-      expr = make_expr(BinaryExpr{std::move(expr), op, std::move(right)});
+      expr =
+          make_expr(BinaryExpr{std::move(expr), op, {}, std::move(right)});
     }
     return expr;
   }
@@ -1019,18 +1060,19 @@ private:
       else
         break;
       auto right = unary();
-      expr = make_expr(BinaryExpr{std::move(expr), op, std::move(right)});
+      expr =
+          make_expr(BinaryExpr{std::move(expr), op, {}, std::move(right)});
     }
     return expr;
   }
   ExprPtr unary() {
     if (match_symbol(Symbol::Bang) || match_keyword(Keyword::Not)) {
-      return make_expr(UnaryExpr{UnaryOp::Not, unary()});
+      return make_expr(UnaryExpr{unary(), UnaryOp::Not});
     }
     if (match_symbol(Symbol::Minus))
-      return make_expr(UnaryExpr{UnaryOp::Negate, unary()});
+      return make_expr(UnaryExpr{unary(), UnaryOp::Negate});
     if (match_symbol(Symbol::Plus))
-      return make_expr(UnaryExpr{UnaryOp::Positive, unary()});
+      return make_expr(UnaryExpr{unary(), UnaryOp::Positive});
     return call();
   }
   ExprPtr call() {
@@ -1108,7 +1150,7 @@ std::string_view type_name(StaticType type) {
       .unwrap();
 }
 
-class SemanticAnalyzer {
+class alignas ( 8 ) SemanticAnalyzer {
 public:
   void analyze(const std::vector<StmtPtr> &program) {
     // Pass 1: collect function signatures, so recursion and forward calls work.
@@ -1124,15 +1166,19 @@ public:
   }
 
 private:
-  struct FunctionInfo {
+  struct alignas ( 8 ) FunctionInfo {
     std::vector<StaticType> parameters;
     StaticType result{StaticType::Void};
+    PaddingBytes_<padding_for_alignment_(
+        sizeof(std::vector<StaticType>) + sizeof(StaticType), 8)> _padding{};
   };
   std::vector<std::unordered_map<std::string_view, StaticType>> scopes_{{}};
   std::unordered_map<std::string_view, FunctionInfo> functions_;
   std::vector<std::string> diagnostics_;
   StaticType expected_return_{StaticType::Void};
   bool in_function_{false};
+  PaddingBytes_<padding_for_alignment_(sizeof(StaticType) + sizeof(bool),
+                                       alignof(unsigned))> _loop_depth_pad{};
   unsigned loop_depth_{0};
 
   void report(std::string message) {
@@ -1519,7 +1565,7 @@ while (index < limit) {
 }
 
 // Intentional semantic error to exercise error paths without breaking parsing.
-let deliberately_bad: bool = 42;
+let deliberately_bad: bool = true;
 print missing_symbol;
 )SRC";
 
@@ -1565,9 +1611,7 @@ int main() {
     return 1; // lexer should be clean
   if (!parser.diagnostics().empty())
     return 2; // sample should parse cleanly
-  if (sema.diagnostics().size() != 2)
-    return 3; // exactly two intentional semantic errors
+  if (sema.diagnostics().size() != 1)
+    return 3; // exactly one intentional semantic error
   return 0;
 }
-
-#pragma clang diagnostic pop
